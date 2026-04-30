@@ -12,6 +12,8 @@ import (
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/db"
 
+	SharedTasks "github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/tasks"
+
 	"testing"
 )
 
@@ -36,9 +38,9 @@ func HandleGenerateEmbedding(ctx context.Context, t *asynq.Task) error {
 	// }
 
 	var tt *testing.T
-	vector, err := TestGenerateEmbedding(content, tt)
+	vector, err := SharedTasks.TestGenerateEmbedding(content, tt)
 	if err != nil {
-		log.Printf("Failed to generate vector: ", err.Error())
+		log.Printf("Failed to generate embedding: ", err.Error())
 		return err
 	}
 

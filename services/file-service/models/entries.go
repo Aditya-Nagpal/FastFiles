@@ -37,3 +37,11 @@ type DeleteFile struct {
 	Type  string `db:"type"`
 	S3Key string `db:"s3_key"`
 }
+
+type SearchResponse struct {
+	ID       int64   `json:"id"`
+	PublicID string  `json:"public_id"`
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	Score    float64 `json:"score"` // Similarity percentage
+}

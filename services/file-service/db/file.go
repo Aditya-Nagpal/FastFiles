@@ -6,6 +6,7 @@ import (
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
 	"github.com/jackc/pgx/v5"
+	"github.com/pgvector/pgvector-go"
 )
 
 func GetInternalID(ctx context.Context, publicId string, userId int64) (*int64, error) {
@@ -66,8 +67,7 @@ func GetFilesByParentId(ctx context.Context, userId int64, internalParentID *int
 	files := make([]models.ListFileResponse, 0)
 	for rows.Next() {
 		var file models.ListFileResponse
-		err := rows.Scan(&file.PublicId, &file.Name, &file.Type, &file.ContentType, &file.Extension, &file.Size, &file.CreatedAt, &file.UpdatedAt)
-		if err != nil {
+		if err := rows.Scan(&file.PublicId, &file.Name, &file.Type, &file.ContentType, &file.Extension, &file.Size, &file.CreatedAt, &file.UpdatedAt); err != nil {
 			return nil, err
 		}
 
@@ -143,4 +143,34 @@ func GetDeleteFile(ctx context.Context, publicId string, userId int64) (*models.
 	}
 
 	return &file, nil
+}
+
+func SearchByVector(ctx context.Context, vector pgvector.Vector, limit int, userId int64) ([]models.SearchResponse, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	query := `
+		SELECT id, public_id, name, type, (1 - (embedding <=> $1)) as score
+		FROM entries
+		WHERE user_id = $2 AND deleted_at IS NULL AND embedding IS NOT NULL AND type = 'FILE'
+		ORDER BY embedding <=> $1
+		LIMIT $3
+	`
+
+	rows, err := DB.Query(ctx, query, vector, userId, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	files := make([]models.SearchResponse, 0)
+	for rows.Next() {
+		var file models.SearchResponse
+		if err := rows.Scan(&file.ID, &file.PublicID, &file.Name, &file.Type, &file.Score); err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+	return files, nil
 }

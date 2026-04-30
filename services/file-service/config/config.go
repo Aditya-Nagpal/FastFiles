@@ -15,6 +15,7 @@ type Config struct {
 	AWSAccessKeyId     string
 	AWSSecretAccessKey string
 	AWSRegion          string
+	OpenAiApiKey       string
 }
 
 var AppConfig *Config
@@ -33,6 +34,7 @@ func LoadConfig() {
 		AWSAccessKeyId:     getEnv("AWS_ACCESS_KEY_ID"),
 		AWSSecretAccessKey: getEnv("AWS_SECRET_ACCESS_KEY"),
 		AWSRegion:          getEnv("AWS_REGION"),
+		OpenAiApiKey:       getEnv("OPENAI_API_KEY"),
 	}
 }
 
