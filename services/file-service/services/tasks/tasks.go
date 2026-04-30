@@ -30,6 +30,6 @@ func (s *TaskService) EnqueueGenerateEmbeddingTask(internalID int64, s3Key strin
 
 	task := asynq.NewTask(tasks.TypeGenerateEmbedding, payload)
 
-	_, err = s.Client.Enqueue(task, asynq.MaxRetry(5), asynq.Timeout(0), asynq.Retention(1*time.Hour))
+	_, err = s.Client.Enqueue(task, asynq.MaxRetry(0), asynq.Timeout(0), asynq.Retention(1*time.Hour))
 	return err
 }

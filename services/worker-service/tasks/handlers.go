@@ -7,14 +7,14 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/config"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/models"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/utils"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/db"
 
 	SharedTasks "github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/tasks"
-
-	"testing"
+	// "testing"
 )
 
 func HandleGenerateEmbedding(ctx context.Context, t *asynq.Task) error {
@@ -32,17 +32,18 @@ func HandleGenerateEmbedding(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 
-	// vector, err := GenerateEmbedding(content, config.AppConfig.OpenAiApiKey)
-	// if err != nil {
-	// 	return err
-	// }
-
-	var tt *testing.T
-	vector, err := SharedTasks.TestGenerateEmbedding(content, tt)
+	vector, err := SharedTasks.GenerateEmbedding(content, config.AppConfig.OpenAiApiKey)
 	if err != nil {
 		log.Printf("Failed to generate embedding: ", err.Error())
 		return err
 	}
+
+	// var tt *testing.T
+	// vector, err := SharedTasks.TestGenerateEmbedding(content, tt)
+	// if err != nil {
+	// 	log.Printf("Failed to generate embedding: ", err.Error())
+	// 	return err
+	// }
 
 	err = db.UpdateEmbedding(ctx, payload.InternalID, vector)
 	if err != nil {

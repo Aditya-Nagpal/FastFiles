@@ -11,8 +11,8 @@ import (
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/services/tasks"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/utils"
 
-	// "github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/config"
-	"testing"
+	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/config"
+	// "testing"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/httputils"
 	SharedTasks "github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/tasks"
@@ -292,12 +292,18 @@ func HandleSearch() gin.HandlerFunc {
 			return
 		}
 
-		var t testing.T
-		queryVector, err := SharedTasks.TestGenerateEmbedding(req.Query, &t)
+		queryVector, err := SharedTasks.GenerateEmbedding(req.Query, config.AppConfig.OpenAiApiKey)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to generate embedding", "error": err.Error()})
 			return
 		}
+
+		// var t testing.T
+		// queryVector, err := SharedTasks.TestGenerateEmbedding(req.Query, &t)
+		// if err != nil {
+		// 	c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to generate embedding", "error": err.Error()})
+		// 	return
+		// }
 
 		files, err := db.SearchByVector(c.Request.Context(), queryVector, req.Limit, userId)
 		if err != nil {
