@@ -151,9 +151,11 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 		return err
 	}
 
-	err = taskService.EnqueueGenerateEmbeddingTask(newId, s3Key)
-	if err != nil {
-		log.Printf("Failed to queue AI task: %v", err.Error())
+	if entryData.ContentType == "application/pdf" {
+		err = taskService.EnqueueGenerateEmbeddingTask(newId, s3Key)
+		if err != nil {
+			log.Printf("Failed to queue AI task: %v", err.Error())
+		}
 	}
 
 	return nil

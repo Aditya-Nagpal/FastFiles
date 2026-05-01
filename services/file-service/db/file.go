@@ -151,10 +151,15 @@ func SearchByVector(ctx context.Context, vector pgvector.Vector, limit int, user
 	}
 
 	query := `
-		SELECT id, public_id, name, type, (1 - (embedding <=> $1)) as score
-		FROM entries
-		WHERE user_id = $2 AND deleted_at IS NULL AND embedding IS NOT NULL AND type = 'FILE'
-		ORDER BY embedding <=> $1
+		SELECT * FROM (
+			SELECT DISTINCT ON (e.id)
+				e.id, e.public_id, e.name, e.type,
+				1 - (fc.embedding <=> $1) AS score
+			FROM entries e
+			JOIN file_chunks fc ON e.id = fc.entry_id
+			WHERE e.user_id = $2 AND e.deleted_at IS NULL AND e.type = 'FILE'
+		) AS subquery
+		ORDER BY score DESC
 		LIMIT $3
 	`
 

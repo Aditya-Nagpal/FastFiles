@@ -46,22 +46,20 @@ func NewS3Uploader() error {
 	return nil
 }
 
-func FetchContentFromS3(ctx context.Context, key string) (string, error) {
+func FetchRawBytesFromS3(ctx context.Context, key string) ([]byte, error) {
 	result, err := s3Uploader.Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s3Uploader.BucketName,
 		Key:    &key,
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer result.Body.Close()
 
-	limitReader := io.LimitReader(result.Body, 100*1024)
-
-	content, err := io.ReadAll(limitReader)
+	data, err := io.ReadAll(result.Body)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return string(content), nil
+	return data, nil
 }
