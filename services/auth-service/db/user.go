@@ -26,13 +26,7 @@ func RegisterUser(ctx context.Context, user models.User) error {
 	defer tx.Rollback(ctx)
 
 	// 1. Fetch the Free plan from the database.
-	var planID int64
-	var quotaBytes int64
-	err = tx.QueryRow(ctx, `
-		SELECT id, storage_limit_bytes
-		FROM plans
-		WHERE code = 'FREE' AND is_active = TRUE
-	`).Scan(&planID, &quotaBytes)
+	planID, quotaBytes, err := GetQuotaBytesForPlan(tx, ctx, "FREE")
 	if err != nil {
 		return err
 	}
@@ -90,32 +84,13 @@ func RegisterUser(ctx context.Context, user models.User) error {
 	}
 
 	// 3. Create the user's Free subscription.
-	_, err = tx.Exec(ctx, `
-		INSERT INTO user_subscriptions (
-			user_id,
-			plan_id,
-			status,
-			started_at,
-			created_at,
-			updated_at
-		)
-		VALUES ($1, $2, 'ACTIVE', $3, $3, $3)
-	`, userID, planID, now)
+	err = InitializeUserSubscription(tx, ctx, userID, planID, quotaBytes)
 	if err != nil {
 		return err
 	}
 
 	// 4. Initialize quota accounting.
-	_, err = tx.Exec(ctx, `
-		INSERT INTO user_storage (
-			user_id,
-			quota_bytes,
-			used_bytes,
-			reserved_bytes,
-			updated_at
-		)
-		VALUES ($1, $2, 0, 0, $3)
-	`, userID, quotaBytes, now)
+	err = InitializeUserStorage(tx, ctx, userID, quotaBytes)
 	if err != nil {
 		return err
 	}
