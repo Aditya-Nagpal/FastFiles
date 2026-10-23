@@ -229,7 +229,7 @@ const timezones = ref([]);
 const selectedCountry = ref({ name: 'India', code: INITIAL_COUNTRY_CODE, flag: 'https://flagcdn.com/w40/in.png' });
 
 const genderOptions = ['male', 'female', 'other', 'prefer_not_to_say'];
-const planOptions = ['free', 'pro', 'business'];
+const planOptions = ['FREE', 'PRO', 'BUSINESS'];
 
 const displayPictureUrl = computed(() => {
   return user.value?.display_picture || defaultImage; 

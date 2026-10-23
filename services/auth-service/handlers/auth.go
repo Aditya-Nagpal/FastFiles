@@ -68,7 +68,13 @@ func Register(c *gin.Context) {
 		fmt.Printf("Error publishing signup email: %v\n", err)
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"user": req, "message": "User registered successfully"})
+	c.JSON(http.StatusCreated, gin.H{"user": gin.H{
+		"name":  req.Name,
+		"email": req.Email,
+		"plan":  req.Plan,
+	},
+		"message": "User registered successfully",
+	})
 }
 
 type LoginRequest struct {
