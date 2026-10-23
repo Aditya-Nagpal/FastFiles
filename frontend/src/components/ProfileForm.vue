@@ -269,17 +269,20 @@ const formatContactNumber = () => {
 
 const fetchInitialData = async () => {
     try {
-        const res = await fetch('https://restcountries.com/v3.1/all?fields=name,idd,flags');
+        const res = await fetch(
+          'https://api.restcountries.com/countries/v5?response_fields=names,flag.url_png,calling_codes',
+          { headers: { 'Authorization': 'Bearer rc_live_0243a77490cb47e692e6c6e259b16980' } }
+        );
         const data = await res.json();
-        countries.value = data
-            .map(country => ({
-                name: country.name.common,
-                code: country.idd?.root
-                    ? `${country.idd.root}${country.idd?.suffixes ? country.idd.suffixes[0] : ''}`
+        countries.value = data?.data?.objects
+            ?.map(country => ({
+                name: country.names.common,
+                code: country.calling_codes
+                    ? `+${country.calling_codes?.length > 0 ? country.calling_codes[0] : ''}`
                     : '',
-                flag: country.flags.png
+                flag: country.flag.url_png || '',
             }))
-            .filter(country => country.code)
+            .filter(country => country.flag)
             .sort((a, b) => a.name.localeCompare(b.name));
     } catch (error) {
         console.error('Error fetching countries:', error);
