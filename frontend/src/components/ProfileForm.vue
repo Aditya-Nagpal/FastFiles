@@ -271,7 +271,7 @@ const fetchInitialData = async () => {
     try {
         const res = await fetch(
           'https://api.restcountries.com/countries/v5?response_fields=names,flag.url_png,calling_codes',
-          { headers: { 'Authorization': 'Bearer rc_live_0243a77490cb47e692e6c6e259b16980' } }
+          { headers: { 'Authorization': `Bearer ${import.meta.env.VITE_RESTCOUNTRIES_API_KEY}` } }
         );
         const data = await res.json();
         countries.value = data?.data?.objects
