@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -112,30 +114,49 @@ func Upload(uploader *utils.S3Uploader, taskService *tasks.TaskService) gin.Hand
 
 func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.TaskService, userId int64, publicId string, internalParentID *int64) error {
 	file, header, err := c.Request.FormFile("file")
-
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	baseName, ext := utils.ParseFilename(header.Filename)
 	size := header.Size
-	s3Key := utils.CreateS3Key(userId, publicId, ext)
+	if size < 0 {
+		return fmt.Errorf("invalid file size")
+	}
 
-	err = uploader.UploadFile(file, header, s3Key)
-	if err != nil {
+	// Reserve quota before uploading to S3.
+	ctx := c.Request.Context()
+	if err := db.ReserveStorage(ctx, userId, size); err != nil {
 		return err
 	}
 
-	var parentId *int64
-	if internalParentID != nil {
-		parentId = internalParentID
+	reservationPending := true
+	defer func() {
+		if reservationPending {
+			// Best-effort cleanup. Log failures for monitoring/reconciliation.
+			if err := db.ReleaseStorageReservation(
+				context.Background(),
+				userId,
+				size,
+			); err != nil {
+				log.Printf("Failed to release storage reservation for user %d: %v", userId, err)
+			}
+		}
+	}()
+
+	baseName, ext := utils.ParseFilename(header.Filename)
+	s3Key := utils.CreateS3Key(userId, publicId, ext)
+
+	if err = uploader.UploadFile(file, header, s3Key); err != nil {
+		return err
 	}
+
+	parentID := internalParentID
 
 	entryData := models.EntryData{
 		PublicId:    publicId,
 		UserId:      userId,
-		ParentId:    parentId,
+		ParentId:    parentID,
 		Name:        baseName,
 		Type:        "FILE",
 		ContentType: header.Header.Get("Content-Type"),
@@ -146,13 +167,21 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 		UpdatedAt:   time.Now(),
 	}
 
-	newId, err := db.InsertEntryData(c.Request.Context(), &entryData)
+	newID, err := db.InsertEntryAndFinalizeStorage(c.Request.Context(), &entryData)
 	if err != nil {
+		// S3 upload succeeded, but database persistence failed.
+		// Try to remove the orphaned S3 object
+		if cleanupErr := uploader.DeleteObject(s3Key, false); cleanupErr != nil {
+			log.Printf("Failed to clean up S3 object %s: %v", s3Key, cleanupErr)
+		}
 		return err
 	}
 
+	// The transaction converted reserved bytes into used bytes.
+	reservationPending = false
+
 	if entryData.ContentType == "application/pdf" {
-		err = taskService.EnqueueGenerateEmbeddingTask(newId, s3Key)
+		err = taskService.EnqueueGenerateEmbeddingTask(newID, s3Key)
 		if err != nil {
 			log.Printf("Failed to queue AI task: %v", err.Error())
 		}
@@ -162,15 +191,15 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 }
 
 func UploadFolder(c *gin.Context, userId int64, publicId string, name string, internalParentID *int64) error {
-	var parentId *int64
+	var parentID *int64
 	if internalParentID != nil {
-		parentId = internalParentID
+		parentID = internalParentID
 	}
 
 	entryData := models.EntryData{
 		PublicId:    publicId,
 		UserId:      userId,
-		ParentId:    parentId,
+		ParentId:    parentID,
 		Name:        name,
 		Type:        "FOLDER",
 		ContentType: "application/x-directory",

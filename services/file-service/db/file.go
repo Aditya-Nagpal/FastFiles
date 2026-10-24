@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
@@ -93,6 +94,58 @@ func InsertEntryData(ctx context.Context, data *models.EntryData) (int64, error)
 		return 0, err
 	}
 	return newId, nil
+}
+
+func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) (int64, error) {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Convert reserved bytes into used bytes.
+	if data.Size > 0 {
+		_, err = ReleaseStorageReservationUsingTransaction(tx, ctx, data)
+		if err != nil {
+			return 0, fmt.Errorf("failed to finalize storage reservation: %w", err)
+		}
+	}
+
+	query := `
+		INSERT INTO entries (
+			public_id, user_id, parent_id, name, type,
+			content_type, extension, size, s3_key,
+			created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id
+	`
+
+	var newID int64
+	err = tx.QueryRow(
+		ctx,
+		query,
+		data.PublicId,
+		data.UserId,
+		data.ParentId,
+		data.Name,
+		data.Type,
+		data.ContentType,
+		data.Extension,
+		data.Size,
+		data.S3Key,
+		data.CreatedAt,
+		data.UpdatedAt,
+	).Scan(&newID)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+
+	return newID, nil
 }
 
 func DeleteFile(ctx context.Context, publicId string, userId int64) error {

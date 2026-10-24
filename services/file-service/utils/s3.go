@@ -51,8 +51,6 @@ func NewS3Uploader() (*S3Uploader, error) {
 }
 
 func (u *S3Uploader) UploadFile(file multipart.File, fileHeader *multipart.FileHeader, key string) error {
-	defer file.Close()
-
 	_, err := u.Client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket:      aws.String(u.BucketName),
 		Key:         aws.String(key),
