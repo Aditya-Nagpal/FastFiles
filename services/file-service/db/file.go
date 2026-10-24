@@ -2,8 +2,10 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
 	"github.com/jackc/pgx/v5"
@@ -148,39 +150,145 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 	return newID, nil
 }
 
-func DeleteFile(ctx context.Context, publicId string, userId int64) error {
-	query := `
-		UPDATE entries
-		SET deleted_at = CURRENT_TIMESTAMP
-		WHERE public_id = $1 AND user_id = $2 AND type = 'FILE' AND deleted_at IS NULL
-	`
+var ErrEntryNotFound = errors.New("entry not found")
 
-	err := DB.QueryRow(ctx, query, publicId, userId).Scan()
-	if err != nil && err != pgx.ErrNoRows {
+func DeleteFile(ctx context.Context, publicId string, userId int64) error {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
 		return err
 	}
+	defer tx.Rollback(ctx)
+
+	// Soft-delete the active file and obtain its actual size.
+	var fileSize int64
+
+	query := `
+		UPDATE entries
+		SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE public_id = $1 AND user_id = $2 AND type = 'FILE' AND deleted_at IS NULL
+		RETURNING size
+	`
+
+	err = tx.QueryRow(ctx, query, publicId, userId).Scan(&fileSize)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrEntryNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to soft-delete file: %w", err)
+	}
+
+	// Release exactly the file's size from committed usage.
+	if fileSize > 0 {
+		_, err := ReleaseQuota(tx, ctx, userId, fileSize)
+		if err != nil {
+			return fmt.Errorf("failed to release quota: %w", err)
+		}
+	}
+
+	// Entry deletion and quota release commit together.
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit file deletion: %w", err)
+	}
+
 	return nil
 }
 
 func DeleteFolder(ctx context.Context, publicId string, userId int64) error {
-	query := `
-		WITH RECURSIVE descendants AS (
-			SELECT id FROM entries
-			WHERE public_id = $1 AND user_id = $2 AND type = 'FOLDER' AND deleted_at IS NULL
-			UNION ALL
-			SELECT e.id FROM entries e
-			INNER JOIN descendants d ON e.parent_id = d.id
-			WHERE e.deleted_at IS NULL
-		)
-		UPDATE entries
-		SET deleted_at = CURRENT_TIMESTAMP
-		WHERE id IN (SELECT id FROM descendants)
-	`
-
-	err := DB.QueryRow(ctx, query, publicId, userId).Scan()
-	if err != nil && err != pgx.ErrNoRows {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
 		return err
 	}
+	defer tx.Rollback(ctx)
+
+	// Lock the root folder so concurrent deletion attempts
+	// cannot both delete and release quota for it.
+	var folderID int64
+
+	err = tx.QueryRow(ctx, `
+		SELECT id
+		FROM entries
+		WHERE public_id = $1
+		  AND user_id = $2
+		  AND type = 'FOLDER'
+		  AND deleted_at IS NULL
+		FOR UPDATE
+	`, publicId, userId).Scan(&folderID)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrEntryNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to find folder: %w", err)
+	}
+
+	// Calculate the actual size of all active files in this subtree.
+	var totalSize int64
+
+	err = tx.QueryRow(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT id, parent_id, type, size
+			FROM entries
+			WHERE id = $1
+			  AND user_id = $2
+			  AND deleted_at IS NULL
+
+			UNION ALL
+
+			SELECT e.id, e.parent_id, e.type, e.size
+			FROM entries e
+			JOIN descendants d ON e.parent_id = d.id
+			WHERE e.user_id = $2
+			  AND e.deleted_at IS NULL
+		)
+		SELECT COALESCE(SUM(size) FILTER (WHERE type = 'FILE'), 0)
+		FROM descendants
+	`, folderID, userId).Scan(&totalSize)
+
+	if err != nil {
+		return fmt.Errorf("failed to calculate folder size: %w", err)
+	}
+
+	// Soft-delete the root and all active descendants.
+	_, err = tx.Exec(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT id
+			FROM entries
+			WHERE id = $1
+			  AND user_id = $2
+			  AND deleted_at IS NULL
+
+			UNION ALL
+
+			SELECT e.id
+			FROM entries e
+			JOIN descendants d ON e.parent_id = d.id
+			WHERE e.user_id = $2
+			  AND e.deleted_at IS NULL
+		)
+		UPDATE entries
+		SET deleted_at = $3,
+		    updated_at = $3
+		WHERE id IN (SELECT id FROM descendants)
+		  AND user_id = $2
+		  AND deleted_at IS NULL
+	`, folderID, userId, time.Now().UTC())
+
+	if err != nil {
+		return fmt.Errorf("failed to soft-delete folder contents: %w", err)
+	}
+
+	// Release the total actual file size, not the cached folder size.
+	if totalSize > 0 {
+		_, err := ReleaseQuota(tx, ctx, userId, totalSize)
+		if err != nil {
+			return fmt.Errorf("failed to release quota: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit folder deletion: %w", err)
+	}
+
 	return nil
 }
 

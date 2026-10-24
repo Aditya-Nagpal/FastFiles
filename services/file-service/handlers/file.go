@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -261,6 +262,20 @@ func DeleteContent(uploader *utils.S3Uploader) gin.HandlerFunc {
 			}
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid entity type"})
+			return
+		}
+
+		if errors.Is(err, db.ErrEntryNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"message": "File or folder not found",
+			})
+			return
+		}
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Failed to delete entry",
+			})
 			return
 		}
 

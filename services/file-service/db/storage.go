@@ -92,3 +92,24 @@ func ReleaseStorageReservationUsingTransaction(tx pgx.Tx, ctx context.Context, d
 	}
 	return id, nil
 }
+
+func ReleaseQuota(tx pgx.Tx, ctx context.Context, userID int64, sizeBytes int64) (int64, error) {
+	query := `
+		UPDATE user_storage
+		SET used_bytes = used_bytes - $1,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE user_id = $2
+			AND used_bytes >= $1
+		RETURNING user_id
+	`
+
+	var updatedUserID int64
+	err := tx.QueryRow(ctx, query, sizeBytes, userID).Scan(&updatedUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("storage accounting inconsistency: cannot release %d bytes for user %d", sizeBytes, userID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to release quota: %w", err)
+	}
+	return updatedUserID, nil
+}
