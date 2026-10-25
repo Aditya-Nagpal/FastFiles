@@ -12,21 +12,23 @@ import (
 func InsertOutboxEvent(
 	tx pgx.Tx,
 	ctx context.Context,
+	eventID string,
 	eventPayload []byte,
-	aggregateType,
-	aggregateId,
+	aggregateType string,
+	aggregateId string,
 	eventType string,
 ) error {
 	query := `
 		INSERT INTO outbox_events (
+			event_id,
 			aggregate_type,
 			aggregate_id,
 			event_type,
 			payload
 		)
-		VALUES ($1, $2, $3, $4::jsonb)
+		VALUES ($1, $2, $3, $4, $5::jsonb)
 	`
-	_, err := tx.Exec(ctx, query, aggregateType, aggregateId, eventType, eventPayload)
+	_, err := tx.Exec(ctx, query, eventID, aggregateType, aggregateId, eventType, eventPayload)
 	if err != nil {
 		return fmt.Errorf("failed to insert outbox event: %w", err)
 	}

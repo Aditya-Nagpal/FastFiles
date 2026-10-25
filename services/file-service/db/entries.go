@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
+	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/events"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pgvector/pgvector-go"
 )
@@ -147,8 +150,10 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 
 	// 3. Insert the outbox event.
 	// We only publish FILE_CREATED for files, not folders.
+	eventID := uuid.NewString()
 	if data.Type == "FILE" {
 		eventPayload, err := json.Marshal(map[string]any{
+			"eventId":     eventID,
 			"eventType":   "FILE_CREATED",
 			"aggregateId": data.PublicId,
 			"userId":      data.UserId,
@@ -165,7 +170,7 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 			return 0, fmt.Errorf("failed to marshal outbox event: %w", err)
 		}
 
-		err = InsertOutboxEvent(tx, ctx, eventPayload, "ENTRY", data.PublicId, "FILE_CREATED")
+		err = InsertOutboxEvent(tx, ctx, eventID, eventPayload, "ENTRY", data.PublicId, "FILE_CREATED")
 		if err != nil {
 			return 0, fmt.Errorf("failed to insert outbox event: %w", err)
 		}
@@ -188,16 +193,21 @@ func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 	defer tx.Rollback(ctx)
 
 	// Soft-delete the active file and obtain its actual size.
-	var fileSize int64
+	var (
+		entryID  int64
+		parentID sql.NullInt64
+		name     string
+		fileSize int64
+	)
 
 	query := `
 		UPDATE entries
 		SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 		WHERE public_id = $1 AND user_id = $2 AND type = 'FILE' AND deleted_at IS NULL
-		RETURNING size
+		RETURNING id, parent_id, name, size
 	`
 
-	err = tx.QueryRow(ctx, query, publicId, userId).Scan(&fileSize)
+	err = tx.QueryRow(ctx, query, publicId, userId).Scan(&entryID, &parentID, &name, &fileSize)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrEntryNotFound
 	}
@@ -213,7 +223,32 @@ func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 		}
 	}
 
-	// Entry deletion and quota release commit together.
+	// Event payload for the outbox event.
+	var parentPtr *int64
+	if parentID.Valid {
+		parentPtr = &parentID.Int64
+	}
+
+	eventID := uuid.NewString()
+	payload, err := json.Marshal(events.EntryEvent{
+		EventID:     eventID,
+		EventType:   events.EventFileDeleted,
+		AggregateID: publicId,
+		UserID:      userId,
+		EntryID:     entryID,
+		PublicID:    publicId,
+		ParentID:    parentPtr,
+		Name:        name,
+		EntryType:   "FILE",
+		Size:        fileSize,
+		CreatedAt:   time.Now().UTC(),
+	})
+
+	if err := InsertOutboxEvent(tx, ctx, eventID, payload, "ENTRY", publicId, events.EventFileDeleted); err != nil {
+		return err
+	}
+
+	// Soft delete, quota release and event commit together.
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit file deletion: %w", err)
 	}
@@ -311,6 +346,26 @@ func DeleteFolder(ctx context.Context, publicId string, userId int64) error {
 		if err != nil {
 			return fmt.Errorf("failed to release quota: %w", err)
 		}
+	}
+
+	eventID := uuid.NewString()
+	payload, err := json.Marshal(events.EntryEvent{
+		EventID:     eventID,
+		EventType:   events.EventFolderDeleted,
+		AggregateID: publicId,
+		UserID:      userId,
+		EntryID:     folderID,
+		PublicID:    publicId,
+		EntryType:   "FOLDER",
+		Size:        totalSize,
+		CreatedAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal folder deletion event: %w", err)
+	}
+
+	if err := InsertOutboxEvent(tx, ctx, eventID, payload, "ENTRY", publicId, events.EventFolderDeleted); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

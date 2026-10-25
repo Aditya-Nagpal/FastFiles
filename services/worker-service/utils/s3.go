@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -62,4 +63,20 @@ func FetchRawBytesFromS3(ctx context.Context, key string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+func DeleteS3Object(ctx context.Context, key string) error {
+	if s3Uploader == nil {
+		return fmt.Errorf("S3 uploader is not initialized")
+	}
+
+	_, err := s3Uploader.Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &s3Uploader.BucketName,
+		Key:    &key,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete S3 object %q: %w", key, err)
+	}
+
+	return nil
 }
