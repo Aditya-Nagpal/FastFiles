@@ -12,13 +12,69 @@ services:
 
     asynqmon:
         image: hibiken/asynqmon:latest
-        platform: linux/amd64 # This forces the M1/M2/M3 to run the Intel version
+        platform: linux/amd64
         container_name: fastfiles-monitor
         ports:
             - "8081:8080"
-        command: ["--redis-addr=redis:6379"]
+        command: [ "--redis-addr=redis:6379" ]
         depends_on:
             - redis
+        networks:
+            - fastfiles-network
+
+    kafka:
+        image: apache/kafka:4.4.0
+        container_name: fastfiles-kafka
+        hostname: kafka
+        ports:
+            - "9092:9092"
+        environment:
+            # KRaft: single node acts as broker and controller
+            KAFKA_NODE_ID: 1
+            KAFKA_PROCESS_ROLES: broker,controller
+
+            # Controller and client listeners
+            KAFKA_LISTENERS: CONTROLLER://localhost:9091,HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093
+            KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:9093
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,HOST:PLAINTEXT,DOCKER:PLAINTEXT
+            KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+            KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9091
+            KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+
+            # Single-broker development settings
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+            KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+            KAFKA_MIN_INSYNC_REPLICAS: 1
+
+            # Persistent Kafka data
+            KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+        volumes:
+            - kafka_data:/var/lib/kafka/data
+
+        networks:
+            - fastfiles-network
+
+        healthcheck:
+            test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1" ]
+            interval: 10s
+            timeout: 10s
+            retries: 10
+            start_period: 20s
+
+    kafka-ui:
+        image: kafbat/kafka-ui:main
+        container_name: fastfiles-kafka-ui
+        ports:
+            - "8082:8080"
+        environment:
+            DYNAMIC_CONFIG_ENABLED: "true"
+            KAFKA_CLUSTERS_0_NAME: fastfiles-local
+            KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
+        depends_on:
+            - kafka
         networks:
             - fastfiles-network
 
@@ -28,3 +84,4 @@ networks:
 
 volumes:
     redis_data:
+    kafka_data:
