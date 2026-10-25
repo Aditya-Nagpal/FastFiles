@@ -16,6 +16,8 @@ type Config struct {
 	AWSSecretAccessKey string
 	AWSRegion          string
 	OpenAiApiKey       string
+	KafkaBrokers       string
+	KafkaTopic         string
 }
 
 var AppConfig *Config
@@ -35,6 +37,8 @@ func LoadConfig() {
 		AWSSecretAccessKey: getEnv("AWS_SECRET_ACCESS_KEY"),
 		AWSRegion:          getEnv("AWS_REGION"),
 		OpenAiApiKey:       getEnv("OPENAI_API_KEY"),
+		KafkaBrokers:       getEnv("KAFKA_BROKERS"),
+		KafkaTopic:         getEnv("KAFKA_TOPIC"),
 	}
 }
 

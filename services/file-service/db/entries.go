@@ -145,7 +145,7 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 		return 0, err
 	}
 
-	// 3. Insert the outbox event in the SAME transaction.
+	// 3. Insert the outbox event.
 	// We only publish FILE_CREATED for files, not folders.
 	if data.Type == "FILE" {
 		eventPayload, err := json.Marshal(map[string]any{
