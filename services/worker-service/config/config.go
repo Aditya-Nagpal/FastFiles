@@ -8,11 +8,14 @@ import (
 )
 
 type Config struct {
+	DatabaseURL        string
 	OpenAiApiKey       string
 	BucketName         string
 	AWSAccessKeyId     string
 	AWSSecretAccessKey string
 	AWSRegion          string
+	KafkaBrokers       string
+	KafkaTopic         string
 }
 
 var AppConfig *Config
@@ -24,11 +27,14 @@ func LoadConfig() {
 	}
 
 	AppConfig = &Config{
+		DatabaseURL:        getEnv("DATABASE_URL"),
 		OpenAiApiKey:       getEnv("OPENAI_API_KEY"),
 		BucketName:         getEnv("AWS_S3_BUCKET_NAME"),
 		AWSAccessKeyId:     getEnv("AWS_ACCESS_KEY_ID"),
 		AWSSecretAccessKey: getEnv("AWS_SECRET_ACCESS_KEY"),
 		AWSRegion:          getEnv("AWS_REGION"),
+		KafkaBrokers:       getEnv("KAFKA_BROKERS"),
+		KafkaTopic:         getEnv("KAFKA_TOPIC"),
 	}
 }
 
