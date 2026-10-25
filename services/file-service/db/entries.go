@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -105,7 +106,7 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 	}
 	defer tx.Rollback(ctx)
 
-	// Convert reserved bytes into used bytes.
+	// 1. Convert reserved bytes into used bytes.
 	if data.Size > 0 {
 		_, err = ReleaseStorageReservationUsingTransaction(tx, ctx, data)
 		if err != nil {
@@ -113,6 +114,7 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 		}
 	}
 
+	// 2. Insert the entry.
 	query := `
 		INSERT INTO entries (
 			public_id, user_id, parent_id, name, type,
@@ -143,8 +145,34 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 		return 0, err
 	}
 
+	// 3. Insert the outbox event in the SAME transaction.
+	// We only publish FILE_CREATED for files, not folders.
+	if data.Type == "FILE" {
+		eventPayload, err := json.Marshal(map[string]any{
+			"eventType":   "FILE_CREATED",
+			"aggregateId": data.PublicId,
+			"userId":      data.UserId,
+			"entryId":     newID,
+			"publicId":    data.PublicId,
+			"parentId":    data.ParentId,
+			"name":        data.Name,
+			"entryType":   data.Type,
+			"size":        data.Size,
+			"s3Key":       data.S3Key.String,
+			"createdAt":   data.CreatedAt.UTC(),
+		})
+		if err != nil {
+			return 0, fmt.Errorf("failed to marshal outbox event: %w", err)
+		}
+
+		err = InsertOutboxEvent(tx, ctx, eventPayload, "ENTRY", data.PublicId, "FILE_CREATED")
+		if err != nil {
+			return 0, fmt.Errorf("failed to insert outbox event: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to commit entry transaction: %w", err)
 	}
 
 	return newID, nil
