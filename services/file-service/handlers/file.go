@@ -211,7 +211,7 @@ func UploadFolder(c *gin.Context, userId int64, publicId string, name string, in
 		UpdatedAt:   time.Now(),
 	}
 
-	_, err := db.InsertEntryData(c.Request.Context(), &entryData)
+	err := db.InsertEntryData(c.Request.Context(), &entryData)
 	if err != nil {
 		return err
 	}

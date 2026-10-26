@@ -88,18 +88,45 @@ func GetFilesByParentId(ctx context.Context, userId int64, internalParentID *int
 	return files, nil
 }
 
-func InsertEntryData(ctx context.Context, data *models.EntryData) (int64, error) {
+func InsertEntryData(ctx context.Context, data *models.EntryData) error {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock and validate the destination folder hierarchy.
+	if data.ParentId != nil {
+		err = LockEntryHierarchy(tx, ctx, data.UserId, *data.ParentId, "FOLDER", false)
+		if err != nil {
+			return err
+		}
+	}
+
 	query := `
 		INSERT INTO entries (public_id, user_id, parent_id, name, type, content_type, extension, size, s3_key, created_at, updated_at)
-	    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id
+	    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 
-	var newId int64
-	err := DB.QueryRow(ctx, query, data.PublicId, data.UserId, data.ParentId, data.Name, data.Type, data.ContentType, data.Extension, data.Size, data.S3Key, data.CreatedAt, data.UpdatedAt).Scan(&newId)
+	_, err = tx.Exec(
+		ctx,
+		query,
+		data.PublicId,
+		data.UserId,
+		data.ParentId,
+		data.Name,
+		data.Type,
+		data.ContentType,
+		data.Extension,
+		data.Size,
+		data.S3Key,
+		data.CreatedAt,
+		data.UpdatedAt,
+	)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	return newId, nil
+	return tx.Commit(ctx)
 }
 
 func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) (int64, error) {
@@ -109,7 +136,15 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Convert reserved bytes into used bytes.
+	// 1. Lock and validate the destination folder hierarchy.
+	if data.ParentId != nil {
+		err = LockEntryHierarchy(tx, ctx, data.UserId, *data.ParentId, "FOLDER", false)
+		if err != nil {
+			return 0, fmt.Errorf("failed to lock destination hierarchy: %w", err)
+		}
+	}
+
+	// 2. Convert reserved bytes into used bytes.
 	if data.Size > 0 {
 		_, err = ReleaseStorageReservationUsingTransaction(tx, ctx, data)
 		if err != nil {
@@ -117,7 +152,7 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 		}
 	}
 
-	// 2. Insert the entry.
+	// 3. Insert the entry.
 	query := `
 		INSERT INTO entries (
 			public_id, user_id, parent_id, name, type,
@@ -148,7 +183,7 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 		return 0, err
 	}
 
-	// 3. Insert the outbox event.
+	// 4. Insert the outbox event.
 	// We only publish FILE_CREATED for files, not folders.
 	eventID := uuid.NewString()
 	if data.Type == "FILE" {
@@ -183,7 +218,155 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 	return newID, nil
 }
 
-var ErrEntryNotFound = errors.New("entry not found")
+var (
+	ErrEntryNotFound         = errors.New("entry not found")
+	ErrInvalidEntryHierarchy = errors.New("invalid entry hierarchy")
+)
+
+func LockEntryHierarchy(
+	tx pgx.Tx,
+	ctx context.Context,
+	userID int64,
+	entryID int64,
+	expectedTargetType string,
+	lockTargetForUpdate bool,
+) error {
+	// Read the target and its ancestors, ordered root -> target.
+	rows, err := tx.Query(ctx, `
+        WITH RECURSIVE ancestors AS (
+            SELECT
+                id,
+                user_id,
+                parent_id,
+                type,
+                deleted_at,
+                ARRAY[id]::BIGINT[] AS path
+            FROM entries
+            WHERE id = $1 AND user_id = $2
+
+            UNION ALL
+
+            SELECT
+                p.id,
+                p.user_id,
+                p.parent_id,
+                p.type,
+                p.deleted_at,
+                a.path || p.id
+            FROM entries p
+            JOIN ancestors a ON a.parent_id = p.id
+            WHERE p.user_id = $2
+              AND NOT p.id = ANY(a.path)
+        )
+        SELECT id, user_id, parent_id, type, deleted_at
+        FROM ancestors
+        ORDER BY cardinality(path) DESC
+    `, entryID, userID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type hierarchyEntry struct {
+		id        int64
+		userID    int64
+		parentID  *int64
+		entryType string
+		deletedAt sql.NullTime
+	}
+
+	var hierarchy []hierarchyEntry
+
+	for rows.Next() {
+		var entry hierarchyEntry
+
+		if err := rows.Scan(
+			&entry.id,
+			&entry.userID,
+			&entry.parentID,
+			&entry.entryType,
+			&entry.deletedAt,
+		); err != nil {
+			return err
+		}
+
+		hierarchy = append(hierarchy, entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(hierarchy) == 0 {
+		return ErrEntryNotFound
+	}
+
+	// The recursive query returns root -> target.
+	target := hierarchy[len(hierarchy)-1]
+
+	if target.id != entryID || target.entryType != expectedTargetType {
+		return ErrInvalidEntryHierarchy
+	}
+
+	// Validate the hierarchy before acquiring locks.
+	for i, entry := range hierarchy {
+		if entry.deletedAt.Valid {
+			return ErrEntryNotFound
+		}
+
+		if i == 0 {
+			if entry.parentID != nil {
+				return ErrInvalidEntryHierarchy
+			}
+			continue
+		}
+
+		parent := hierarchy[i-1]
+
+		if entry.parentID == nil || *entry.parentID != parent.id {
+			return ErrInvalidEntryHierarchy
+		}
+
+		if parent.entryType != "FOLDER" {
+			return ErrInvalidEntryHierarchy
+		}
+	}
+
+	// Lock ancestors first, then the target. This consistent order
+	// helps avoid deadlocks between concurrent hierarchy mutations.
+	for i, entry := range hierarchy {
+		var lockedID int64
+
+		if i == len(hierarchy)-1 && lockTargetForUpdate {
+			err = tx.QueryRow(ctx, `
+                SELECT id
+                FROM entries
+                WHERE id = $1
+                  AND user_id = $2
+                  AND deleted_at IS NULL
+                FOR UPDATE
+            `, entry.id, userID).Scan(&lockedID)
+		} else {
+			err = tx.QueryRow(ctx, `
+                SELECT id
+                FROM entries
+                WHERE id = $1
+                  AND user_id = $2
+                  AND deleted_at IS NULL
+                FOR SHARE
+            `, entry.id, userID).Scan(&lockedID)
+		}
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrEntryNotFound
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
 
 func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 	tx, err := DB.Begin(ctx)
@@ -192,7 +375,7 @@ func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Soft-delete the active file and obtain its actual size.
+	// Find the active file before acquiring hierarchy locks.
 	var (
 		entryID  int64
 		parentID sql.NullInt64
@@ -200,17 +383,47 @@ func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 		fileSize int64
 	)
 
-	query := `
-		UPDATE entries
-		SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE public_id = $1 AND user_id = $2 AND type = 'FILE' AND deleted_at IS NULL
-		RETURNING id, parent_id, name, size
-	`
+	err = tx.QueryRow(ctx, `
+		SELECT id, parent_id, name, size
+		FROM entries
+		WHERE public_id = $1
+			AND user_id = $2
+			AND type = 'FILE'
+			AND deleted_at IS NULL
+	`, publicId, userId).Scan(&entryID, &parentID, &name, &fileSize)
 
-	err = tx.QueryRow(ctx, query, publicId, userId).Scan(&entryID, &parentID, &name, &fileSize)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrEntryNotFound
 	}
+	if err != nil {
+		return fmt.Errorf("failed to find file: %w", err)
+	}
+
+	// Lock the parent hierarchy first, then lock the file itself.
+	if parentID.Valid {
+		err = LockEntryHierarchy(tx, ctx, userId, parentID.Int64, "FOLDER", false)
+		if err != nil {
+			return fmt.Errorf("failed to lock parent hierarchy: %w", err)
+		}
+	}
+
+	err = LockEntryHierarchy(tx, ctx, userId, entryID, "FILE", true)
+	if err != nil {
+		return fmt.Errorf("failed to lock file hierarchy: %w", err)
+	}
+
+	// Soft-delete only after all required locks are acquired.
+
+	_, err = tx.Exec(ctx, `
+		UPDATE entries
+		SET deleted_at = CURRENT_TIMESTAMP,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+			AND user_id = $2
+			AND type = 'FILE'
+			AND deleted_at IS NULL
+	`, entryID, userId)
+
 	if err != nil {
 		return fmt.Errorf("failed to soft-delete file: %w", err)
 	}
@@ -263,8 +476,7 @@ func DeleteFolder(ctx context.Context, publicId string, userId int64) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Lock the root folder so concurrent deletion attempts
-	// cannot both delete and release quota for it.
+	// Find the active folder first.
 	var folderID int64
 
 	err = tx.QueryRow(ctx, `
@@ -274,7 +486,6 @@ func DeleteFolder(ctx context.Context, publicId string, userId int64) error {
 		  AND user_id = $2
 		  AND type = 'FOLDER'
 		  AND deleted_at IS NULL
-		FOR UPDATE
 	`, publicId, userId).Scan(&folderID)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -282,6 +493,12 @@ func DeleteFolder(ctx context.Context, publicId string, userId int64) error {
 	}
 	if err != nil {
 		return fmt.Errorf("failed to find folder: %w", err)
+	}
+
+	// Lock ancestors first, then exclusively lock the target folder.
+	err = LockEntryHierarchy(tx, ctx, userId, folderID, "FOLDER", true)
+	if err != nil {
+		return fmt.Errorf("failed to lock folder hierarchy: %w", err)
 	}
 
 	// Calculate the actual size of all active files in this subtree.
