@@ -103,13 +103,13 @@ func commitWithRetry(
 		}
 
 		if ctx.Err() != nil {
-			return nil
+			return ctx.Err()
 		}
 
 		log.Printf("Kafka offset commit failed: %v", err)
 
 		if !wait(ctx, time.Second) {
-			return nil
+			return ctx.Err()
 		}
 	}
 }
