@@ -50,7 +50,12 @@ func Run(ctx context.Context, brokers []string, topic string) {
 		var payload events.EntryEvent
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			log.Printf("Outbox: invalid payload for event %d: %v", event.ID, err)
-			db.RecordFailure(ctx, event.ID, err)
+			if newErr := db.RecordFailure(ctx, event.ID, err); newErr != nil {
+				log.Printf("Outbox: retry scheduling failed: %v", err)
+				if !wait(ctx, 2*time.Second) {
+					return
+				}
+			}
 			continue
 		}
 
@@ -60,7 +65,12 @@ func Run(ctx context.Context, brokers []string, topic string) {
 		messagePayload, err := json.Marshal(payload)
 		if err != nil {
 			log.Printf("Outbox: failed to encode event %d: %v", event.ID, err)
-			db.RecordFailure(ctx, event.ID, err)
+			if newErr := db.RecordFailure(ctx, event.ID, err); newErr != nil {
+				log.Printf("Outbox: retry scheduling failed: %v", err)
+				if !wait(ctx, 2*time.Second) {
+					return
+				}
+			}
 			continue
 		}
 
@@ -79,7 +89,12 @@ func Run(ctx context.Context, brokers []string, topic string) {
 
 		if err != nil {
 			log.Printf("Outbox: Kafka publish failed for event %d: %v", event.ID, err)
-			db.RecordFailure(ctx, event.ID, err)
+			if newErr := db.RecordFailure(ctx, event.ID, err); newErr != nil {
+				log.Printf("Outbox: retry scheduling failed: %v", err)
+				if !wait(ctx, 2*time.Second) {
+					return
+				}
+			}
 			continue
 		}
 

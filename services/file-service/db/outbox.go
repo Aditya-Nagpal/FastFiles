@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
 	"github.com/jackc/pgx/v5"
@@ -88,7 +87,7 @@ func MarkEventAsPublished(ctx context.Context, eventID int64) error {
 	return nil
 }
 
-func RecordFailure(ctx context.Context, eventID int64, publishErr error) {
+func RecordFailure(ctx context.Context, eventID int64, publishErr error) error {
 	query := `
 		UPDATE outbox_events
 		SET attempts = attempts + 1,
@@ -99,8 +98,14 @@ func RecordFailure(ctx context.Context, eventID int64, publishErr error) {
 		     last_error = $2
 		WHERE id = $1 AND status = 'PENDING'
 	`
-	_, err := DB.Exec(ctx, query, eventID, publishErr.Error())
+	tag, err := DB.Exec(ctx, query, eventID, publishErr.Error())
 	if err != nil {
-		log.Printf("Outbox: failed to record retry for event %d: %v", eventID, err)
+		return fmt.Errorf("failed to record retry for event %d: %w", eventID, err)
 	}
+
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("could not record retry for event %d: event not pending or missing", eventID)
+	}
+
+	return nil
 }

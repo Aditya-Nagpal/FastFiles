@@ -10,18 +10,34 @@ import (
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/utils"
 )
 
+type PermanentError struct {
+	Err error
+}
+
+func (e *PermanentError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *PermanentError) Unwrap() error {
+	return e.Err
+}
+
 func HandleS3CleanupEvent(ctx context.Context, message []byte) error {
 	var event events.EntryEvent
 	if err := json.Unmarshal(message, &event); err != nil {
-		return fmt.Errorf("invalid entry event JSON: %w", err)
+		return &PermanentError{
+			Err: fmt.Errorf("invalid entry event JSON: %w", err),
+		}
 	}
 
 	if event.UserID <= 0 || event.EntryID <= 0 {
-		return fmt.Errorf(
-			"invalid event identity: userId=%d entryId=%d",
-			event.UserID,
-			event.EntryID,
-		)
+		return &PermanentError{
+			Err: fmt.Errorf(
+				"invalid event identity: userId=%d entryId=%d",
+				event.UserID,
+				event.EntryID,
+			),
+		}
 	}
 
 	var keys []string
