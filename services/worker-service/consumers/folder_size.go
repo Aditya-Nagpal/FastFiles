@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/events"
+	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/models"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/workers"
 	"github.com/segmentio/kafka-go"
 )
+
+const folderSizeDLQTopic = "folder-size-dlq"
 
 func RunFolderSizeConsumer(
 	ctx context.Context,
@@ -24,7 +28,6 @@ func RunFolderSizeConsumer(
 		MinBytes: 1,
 		MaxBytes: 10e6,
 	})
-
 	defer reader.Close()
 
 	log.Printf("Folder-size consumer started; topic=%s", topic)
@@ -43,38 +46,49 @@ func RunFolderSizeConsumer(
 			continue
 		}
 
-		// Invalid JSON cannot succeed on retry. Log and commit it
-		// to avoid blocking this partition indefinitely.
-		if !json.Valid(message.Value) {
-			log.Printf(
-				"Skipping malformed Kafka message at partition=%d offset=%d",
-				message.Partition,
-				message.Offset,
-			)
-			if err := commitWithRetry(ctx, reader, message); err != nil {
-				return err
-			}
-			continue
-		}
-
 		var event events.EntryEvent
+
+		// Malformed JSON cannot succeed on retry.
 		if err := json.Unmarshal(message.Value, &event); err != nil {
-			log.Printf("Skipping invalid event at offset=%d: %v", message.Offset, err)
-			if err := commitWithRetry(ctx, reader, message); err != nil {
+			permanentErr := fmt.Errorf("invalid entry event JSON: %w", err)
+
+			if err := publishAndCommitFolderSizeDLQ(
+				ctx, brokers, reader, message, "unknown", permanentErr,
+			); err != nil {
 				return err
 			}
 			continue
 		}
 
-		// Retry the same message until processing succeeds or shutdown begins.
+		// Retry processing until success, permanent failure,
+		// or shutdown.
 		for {
-			err = workers.HandleFolderSizeEvent(ctx, message.Value)
+			err := workers.HandleFolderSizeEvent(ctx, message.Value)
 			if err == nil {
 				break
 			}
 
+			var permanentErr *workers.PermanentError
+			if errors.As(err, &permanentErr) {
+				log.Printf(
+					"Folder-size permanent failure at offset=%d: %v",
+					message.Offset,
+					err,
+				)
+
+				if err := publishAndCommitFolderSizeDLQ(
+					ctx, brokers, reader, message, event.EventID, err,
+				); err != nil {
+					return err
+				}
+
+				// Already committed after successful DLQ publish.
+				// Do not commit this message again.
+				goto nextMessage
+			}
+
 			log.Printf(
-				"Folder-size processing failed for event %s: %v",
+				"Folder-size transient failure for event %s: %v",
 				event.EventID,
 				err,
 			)
@@ -84,11 +98,95 @@ func RunFolderSizeConsumer(
 			}
 		}
 
-		// Commit only after successful processing.
+		// Normal successful processing: commit once.
 		if err := commitWithRetry(ctx, reader, message); err != nil {
 			return err
 		}
+
+	nextMessage:
+		continue
 	}
+}
+
+func publishAndCommitFolderSizeDLQ(
+	ctx context.Context,
+	brokers []string,
+	reader *kafka.Reader,
+	original kafka.Message,
+	eventID string,
+	cause error,
+) error {
+	// Retry DLQ publishing. Never commit the original event
+	// until the DLQ write succeeds.
+	for {
+		err := PublishToFolderSizeDLQ(
+			ctx, brokers, original, eventID, cause,
+		)
+		if err == nil {
+			break
+		}
+
+		log.Printf("Folder-size DLQ publish failed: %v", err)
+
+		if !wait(ctx, 2*time.Second) {
+			return ctx.Err()
+		}
+	}
+
+	if err := commitWithRetry(ctx, reader, original); err != nil {
+		return fmt.Errorf(
+			"folder-size DLQ published but original offset commit failed: %w",
+			err,
+		)
+	}
+
+	log.Printf(
+		"Folder-size permanent failure sent to DLQ; partition=%d offset=%d",
+		original.Partition,
+		original.Offset,
+	)
+
+	return nil
+}
+
+func PublishToFolderSizeDLQ(
+	ctx context.Context,
+	brokers []string,
+	original kafka.Message,
+	eventID string,
+	cause error,
+) error {
+	writer := &kafka.Writer{
+		Addr:         kafka.TCP(brokers...),
+		Topic:        folderSizeDLQTopic,
+		Balancer:     &kafka.Hash{},
+		RequiredAcks: kafka.RequireAll,
+		Async:        false,
+	}
+	defer writer.Close()
+
+	payload, err := json.Marshal(models.FolderSizeDLQMessage{
+		EventID:         eventID,
+		Error:           cause.Error(),
+		OriginalPayload: string(original.Value),
+		FailedAt:        time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal folder-size DLQ message: %w", err)
+	}
+
+	if err := writer.WriteMessages(ctx, kafka.Message{
+		Key:   original.Key,
+		Value: payload,
+		Headers: []kafka.Header{
+			{Key: "event_id", Value: []byte(eventID)},
+			{Key: "failure_reason", Value: []byte(cause.Error())},
+		},
+	}); err != nil {
+		return fmt.Errorf("publish folder-size DLQ message: %w", err)
+	}
+
+	return nil
 }
 
 func commitWithRetry(
