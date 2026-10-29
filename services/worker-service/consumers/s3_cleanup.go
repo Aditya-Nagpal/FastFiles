@@ -10,8 +10,14 @@ import (
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/events"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/models"
+	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/utils"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/workers"
 	"github.com/segmentio/kafka-go"
+)
+
+const (
+	s3CleanupDLQTopic = "s3-cleanup-dlq"
+	maxCleanupBackoff = 5 * time.Minute
 )
 
 func RunS3CleanupConsumer(
@@ -38,6 +44,7 @@ func RunS3CleanupConsumer(
 			}
 
 			log.Printf("S3 cleanup: Kafka fetch failed: %v", err)
+
 			if !wait(ctx, 2*time.Second) {
 				return nil
 			}
@@ -46,13 +53,20 @@ func RunS3CleanupConsumer(
 
 		var event events.EntryEvent
 		if err := json.Unmarshal(message.Value, &event); err != nil {
-			log.Printf("S3 cleanup: malformed event at offset=%d: %v",
-				message.Offset, err)
+			log.Printf(
+				"S3 cleanup: malformed event at offset=%d: %v",
+				message.Offset,
+				err,
+			)
 
-			if dlqErr := PublishToS3CleanupDLQ(
-				ctx, brokers, message, "unknown", err,
+			if dlqErr := publishMalformedS3Event(
+				ctx, brokers, message, err,
 			); dlqErr != nil {
-				log.Printf("S3 cleanup: failed to publish malformed event to DLQ: %v", dlqErr)
+				log.Printf(
+					"S3 cleanup: failed to publish malformed event to DLQ: %v",
+					dlqErr,
+				)
+
 				if !wait(ctx, 2*time.Second) {
 					return nil
 				}
@@ -67,6 +81,7 @@ func RunS3CleanupConsumer(
 
 		switch event.EventType {
 		case events.EventFileDeleted, events.EventFolderDeleted:
+			// Process deletion events.
 		default:
 			// This group also receives FILE_CREATED and ignores it.
 			if err := commitWithRetry(ctx, reader, message); err != nil {
@@ -76,6 +91,7 @@ func RunS3CleanupConsumer(
 		}
 
 		sentToDLQ := false
+		retryAttempt := 0
 
 		for {
 			err = workers.HandleS3CleanupEvent(ctx, message.Value)
@@ -88,8 +104,11 @@ func RunS3CleanupConsumer(
 				if dlqErr := PublishToS3CleanupDLQ(
 					ctx, brokers, message, event.EventID, permanentErr,
 				); dlqErr != nil {
-					log.Printf("S3 cleanup: DLQ publish failed for event %s: %v",
-						event.EventID, dlqErr)
+					log.Printf(
+						"S3 cleanup: DLQ publish failed for event %s: %v",
+						event.EventID,
+						dlqErr,
+					)
 
 					if !wait(ctx, 2*time.Second) {
 						return nil
@@ -101,15 +120,43 @@ func RunS3CleanupConsumer(
 					return err
 				}
 
-				log.Printf("S3 cleanup: permanent failure sent to DLQ; event=%s",
-					event.EventID)
+				log.Printf(
+					"S3 cleanup: permanent failure sent to DLQ; event=%s",
+					event.EventID,
+				)
+
 				sentToDLQ = true
 				break
 			}
 
-			log.Printf("S3 cleanup failed for event %s: %v", event.EventID, err)
+			retryAttempt++
 
-			if !wait(ctx, 2*time.Second) {
+			delay := s3CleanupRetryDelay(
+				retryAttempt,
+				utils.IsS3ConfigurationError(err),
+			)
+
+			if utils.IsS3ConfigurationError(err) {
+				log.Printf(
+					"S3 cleanup configuration error for event %s; "+
+						"attempt=%d retry_in=%s: %v",
+					event.EventID,
+					retryAttempt,
+					delay,
+					err,
+				)
+			} else {
+				log.Printf(
+					"S3 cleanup transient failure for event %s; "+
+						"attempt=%d retry_in=%s: %v",
+					event.EventID,
+					retryAttempt,
+					delay,
+					err,
+				)
+			}
+
+			if !wait(ctx, delay) {
 				return nil
 			}
 		}
@@ -118,13 +165,56 @@ func RunS3CleanupConsumer(
 			continue
 		}
 
+		// Commit only after successful cleanup.
 		if err := commitWithRetry(ctx, reader, message); err != nil {
 			return err
 		}
 
-		log.Printf("S3 cleanup completed: event=%s type=%s",
-			event.EventID, event.EventType)
+		log.Printf(
+			"S3 cleanup completed: event=%s type=%s",
+			event.EventID,
+			event.EventType,
+		)
 	}
+}
+
+func s3CleanupRetryDelay(
+	attempt int,
+	configurationError bool,
+) time.Duration {
+	delay := 2 * time.Second
+
+	if configurationError {
+		delay = 30 * time.Second
+	}
+
+	for i := 1; i < attempt; i++ {
+		if delay >= maxCleanupBackoff/2 {
+			return maxCleanupBackoff
+		}
+		delay *= 2
+	}
+
+	if delay > maxCleanupBackoff {
+		return maxCleanupBackoff
+	}
+
+	return delay
+}
+
+func publishMalformedS3Event(
+	ctx context.Context,
+	brokers []string,
+	message kafka.Message,
+	cause error,
+) error {
+	return PublishToS3CleanupDLQ(
+		ctx,
+		brokers,
+		message,
+		"unknown",
+		cause,
+	)
 }
 
 func PublishToS3CleanupDLQ(
@@ -136,7 +226,7 @@ func PublishToS3CleanupDLQ(
 ) error {
 	writer := &kafka.Writer{
 		Addr:         kafka.TCP(brokers...),
-		Topic:        "s3-cleanup-dlq",
+		Topic:        s3CleanupDLQTopic,
 		Balancer:     &kafka.Hash{},
 		RequiredAcks: kafka.RequireAll,
 		Async:        false,
@@ -153,13 +243,16 @@ func PublishToS3CleanupDLQ(
 		return fmt.Errorf("marshal DLQ message: %w", err)
 	}
 
-	return writer.WriteMessages(ctx, kafka.Message{
+	if err := writer.WriteMessages(ctx, kafka.Message{
 		Key:   original.Key,
 		Value: payload,
 		Headers: []kafka.Header{
 			{Key: "event_id", Value: []byte(eventID)},
 			{Key: "failure_reason", Value: []byte(cause.Error())},
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("publish S3 cleanup DLQ message: %w", err)
+	}
 
+	return nil
 }
