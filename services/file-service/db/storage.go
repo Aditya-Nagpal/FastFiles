@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
 	"github.com/jackc/pgx/v5"
@@ -115,6 +116,50 @@ func CreateStorageReservation(ctx context.Context, userID int64, sizeBytes int64
 	}
 
 	return reservationID, nil
+}
+
+// RenewStorageReservation extends the lease of a pending reservation.
+func RenewStorageReservation(
+	ctx context.Context,
+	reservationID int64,
+	leaseDuration time.Duration,
+) error {
+	if leaseDuration <= 0 {
+		return fmt.Errorf("lease duration must be positive")
+	}
+
+	query := `
+        UPDATE storage_reservations
+        SET lease_expires_at = CURRENT_TIMESTAMP
+            + ($1 * INTERVAL '1 second'),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+          AND status = 'PENDING'
+    `
+
+	tag, err := DB.Exec(
+		ctx,
+		query,
+		leaseDuration.Seconds(),
+		reservationID,
+	)
+
+	if err != nil {
+		return fmt.Errorf(
+			"failed to renew reservation %d: %w",
+			reservationID,
+			err,
+		)
+	}
+
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf(
+			"reservation %d does not exist or is no longer pending",
+			reservationID,
+		)
+	}
+
+	return nil
 }
 
 func ReleaseStorageReservation(ctx context.Context, userID int64, sizeBytes int64) error {
@@ -340,6 +385,126 @@ func FinalizeStorageReservationUsingTransaction(
 	}
 
 	return nil
+}
+
+// RecoverExpiredStorageReservations releases expired pending reservations.
+//
+// FOR UPDATE SKIP LOCKED allows multiple recovery workers to process
+// different reservations concurrently without processing the same row.
+func RecoverExpiredStorageReservations(
+	ctx context.Context,
+	batchSize int,
+) (int, error) {
+	if batchSize <= 0 {
+		return 0, fmt.Errorf("batch size must be positive")
+	}
+
+	tx, err := DB.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin recovery transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Lock a batch of expired pending reservations.
+	rows, err := tx.Query(ctx, `
+        SELECT id, user_id, size_bytes
+        FROM storage_reservations
+        WHERE status = 'PENDING'
+          AND lease_expires_at <= CURRENT_TIMESTAMP
+        ORDER BY lease_expires_at ASC
+        LIMIT $1
+        FOR UPDATE SKIP LOCKED
+    `, batchSize)
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch expired reservations: %w", err)
+	}
+
+	type expiredReservation struct {
+		id        int64
+		userID    int64
+		sizeBytes int64
+	}
+
+	var reservations []expiredReservation
+
+	for rows.Next() {
+		var reservation expiredReservation
+
+		if err := rows.Scan(
+			&reservation.id,
+			&reservation.userID,
+			&reservation.sizeBytes,
+		); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("failed to scan reservation: %w", err)
+		}
+
+		reservations = append(reservations, reservation)
+	}
+
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("failed to read expired reservations: %w", err)
+	}
+
+	rows.Close()
+
+	// 2. Release each reservation and update its status.
+	for _, reservation := range reservations {
+		tag, err := tx.Exec(ctx, `
+            UPDATE user_storage
+            SET reserved_bytes = reserved_bytes - $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = $2
+              AND reserved_bytes >= $1
+        `, reservation.sizeBytes, reservation.userID)
+
+		if err != nil {
+			return 0, fmt.Errorf(
+				"failed to release quota for reservation %d: %w",
+				reservation.id,
+				err,
+			)
+		}
+
+		if tag.RowsAffected() != 1 {
+			return 0, fmt.Errorf(
+				"storage accounting inconsistency for reservation %d",
+				reservation.id,
+			)
+		}
+
+		tag, err = tx.Exec(ctx, `
+            UPDATE storage_reservations
+            SET status = 'RELEASED',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+              AND status = 'PENDING'
+        `, reservation.id)
+
+		if err != nil {
+			return 0, fmt.Errorf(
+				"failed to mark reservation %d as released: %w",
+				reservation.id,
+				err,
+			)
+		}
+
+		if tag.RowsAffected() != 1 {
+			return 0, fmt.Errorf(
+				"failed to update reservation %d status",
+				reservation.id,
+			)
+		}
+	}
+
+	// 3. Commit the entire batch atomically.
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("failed to commit reservation recovery: %w", err)
+	}
+
+	return len(reservations), nil
 }
 
 func ReleaseQuota(tx pgx.Tx, ctx context.Context, userID int64, sizeBytes int64) (int64, error) {

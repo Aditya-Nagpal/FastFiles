@@ -70,6 +70,11 @@ func TestConcurrentUploadAndFolderDeletion(t *testing.T) {
 		`, userID)
 
 		_, _ = pool.Exec(cleanupCtx, `
+			DELETE FROM storage_reservations
+			WHERE user_id = $1
+		`, userID)
+
+		_, _ = pool.Exec(cleanupCtx, `
 			DELETE FROM user_storage WHERE user_id = $1
 		`, userID)
 	})
@@ -680,10 +685,17 @@ func TestConcurrentInsertEntryAndFinalizeStorageVsDeleteFolder(t *testing.T) {
 			`DELETE FROM outbox_events WHERE aggregate_id = ANY($1::varchar[])`,
 			[]string{rootPublicID, childPublicID, filePublicID},
 		)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM entries WHERE user_id = $1`,
 			userID,
 		)
+
+		_, _ = pool.Exec(cleanupCtx, `
+			DELETE FROM storage_reservations
+			WHERE user_id = $1
+		`, userID)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM user_storage WHERE user_id = $1`,
 			userID,
@@ -879,10 +891,17 @@ func TestSuccessfulUploadThenFolderDeletion(t *testing.T) {
 			`DELETE FROM outbox_events WHERE aggregate_id = ANY($1::varchar[])`,
 			[]string{rootPublicID, childPublicID, filePublicID},
 		)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM entries WHERE user_id = $1`,
 			userID,
 		)
+
+		_, _ = pool.Exec(cleanupCtx, `
+			DELETE FROM storage_reservations
+			WHERE user_id = $1
+		`, userID)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM user_storage WHERE user_id = $1`,
 			userID,

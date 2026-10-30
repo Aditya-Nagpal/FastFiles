@@ -15,6 +15,7 @@ import (
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/db"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/outbox"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/routes"
+	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/services/storage_recovery"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/services/tasks"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/utils"
 	"github.com/gin-gonic/gin"
@@ -51,13 +52,24 @@ func main() {
 	// Start the outbox publisher in the background.
 	go outbox.Run(ctx, brokers, topic)
 
+	// Start storage reservation recovery worker.
+	recoveryDone := make(chan struct{})
+
+	go func() {
+		defer close(recoveryDone)
+		storage_recovery.Run(ctx)
+	}()
+
+	// Initialize S3 uploader.
 	s3Uploader, err := utils.NewS3Uploader()
 	if err != nil {
 		log.Fatalf("Failed to initialize S3 uploader: %v", err)
 	}
 
+	// Initialize task service.
 	taskService := tasks.NewTaskService("localhost" + config.AppConfig.RedisPort)
 
+	// Initialize Gin router.
 	r := gin.Default()
 	routes.SetupRoutes(r, s3Uploader, taskService)
 
@@ -66,7 +78,7 @@ func main() {
 		Handler: r,
 	}
 
-	// Run the HTTP server without blocking the shutdown handler.
+	// Start HTTP server in the background.
 	go func() {
 		log.Printf("File service listening on %s", server.Addr)
 
@@ -77,6 +89,7 @@ func main() {
 		}
 	}()
 
+	// Wait for shutdown signal.
 	<-ctx.Done()
 	log.Println("Shutting down file service...")
 
@@ -86,7 +99,17 @@ func main() {
 	)
 	defer cancel()
 
+	// Stop accepting new requests and wait for active requests.
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	// Wait for recovery worker to stop.
+	select {
+	case <-recoveryDone:
+		log.Println("Storage recovery worker shut down successfully")
+
+	case <-shutdownCtx.Done():
+		log.Println("Timed out waiting for storage recovery worker")
 	}
 }

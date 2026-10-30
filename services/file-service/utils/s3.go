@@ -70,7 +70,12 @@ func NewS3Uploader() (*S3Uploader, error) {
 	}, nil
 }
 
-func (u *S3Uploader) UploadFile(file multipart.File, fileHeader *multipart.FileHeader, key string) error {
+func (u *S3Uploader) UploadFile(
+	ctx context.Context,
+	file multipart.File,
+	fileHeader *multipart.FileHeader,
+	key string,
+) error {
 	client := u.PutObjectClient
 	if client == nil {
 		client = u.Client
@@ -79,7 +84,7 @@ func (u *S3Uploader) UploadFile(file multipart.File, fileHeader *multipart.FileH
 		return fmt.Errorf("S3 client is not initialized")
 	}
 
-	_, err := client.PutObject(context.TODO(), &s3.PutObjectInput{
+	_, err := client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(u.BucketName),
 		Key:         aws.String(key),
 		Body:        file,

@@ -148,9 +148,34 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 	baseName, ext := utils.ParseFilename(header.Filename)
 	s3Key := utils.CreateS3Key(userId, publicId, ext)
 
-	// 3. Upload file to S3.
-	if err = uploader.UploadFile(file, header, s3Key); err != nil {
-		return err
+	// 3. Start reservation heartbeat before S3 upload.
+	uploadCtx, stopHeartbeat := StartStorageReservationHeartbeat(ctx, reservationID)
+
+	// 4. Upload file to S3 using the heartbeat-managed context.
+	uploadErr := uploader.UploadFile(uploadCtx, file, header, s3Key)
+
+	// 5. Stop heartbeat and wait for any ongoing renewal.
+	heartbeatErr := stopHeartbeat()
+
+	// 6. If heartbeat failed, do not proceed with DB finalization.
+	if heartbeatErr != nil {
+		if uploadErr == nil {
+			// S3 upload succeeded, but reservation renewal failed.
+			// Remove the uploaded object to avoid an orphan.
+			if cleanupErr := uploader.DeleteObject(s3Key, false); cleanupErr != nil {
+				log.Printf(
+					"Failed to cleanup S3 object %s after heartbeat failure: %v",
+					s3Key,
+					cleanupErr,
+				)
+			}
+		}
+
+		return heartbeatErr
+	}
+
+	if uploadErr != nil {
+		return uploadErr
 	}
 
 	parentID := internalParentID
@@ -169,7 +194,7 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 		UpdatedAt:   time.Now(),
 	}
 
-	// 4. Insert entry and finalize this exact reservation.
+	// 7. Insert entry and finalize this exact reservation.
 	newID, err := db.InsertEntryAndFinalizeStorage(c.Request.Context(), &entryData, reservationID)
 	if err != nil {
 		// S3 upload succeeded, but database persistence failed.
@@ -180,10 +205,10 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 		return err
 	}
 
-	// 5. Reservation is now FINALIZED.
+	// 8. Reservation is now FINALIZED.
 	reservationPending = false
 
-	// 6. Queue PDF embedding task.
+	// 9. Queue PDF embedding task.
 	if entryData.ContentType == "application/pdf" {
 		err = taskService.EnqueueGenerateEmbeddingTask(newID, s3Key)
 		if err != nil {
