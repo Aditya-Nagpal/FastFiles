@@ -15,11 +15,29 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+type S3PutObjectAPI interface {
+	PutObject(
+		ctx context.Context,
+		params *s3.PutObjectInput,
+		optFns ...func(*s3.Options),
+	) (*s3.PutObjectOutput, error)
+}
+
+type S3DeleteObjectAPI interface {
+	DeleteObject(
+		ctx context.Context,
+		params *s3.DeleteObjectInput,
+		optFns ...func(*s3.Options),
+	) (*s3.DeleteObjectOutput, error)
+}
+
 type S3Uploader struct {
-	Client     *s3.Client
-	Presigner  *s3.PresignClient
-	BucketName string
-	Region     string
+	Client             *s3.Client
+	PutObjectClient    S3PutObjectAPI
+	DeleteObjectClient S3DeleteObjectAPI
+	Presigner          *s3.PresignClient
+	BucketName         string
+	Region             string
 }
 
 func NewS3Uploader() (*S3Uploader, error) {
@@ -43,15 +61,25 @@ func NewS3Uploader() (*S3Uploader, error) {
 	presignClient := s3.NewPresignClient(client)
 
 	return &S3Uploader{
-		Client:     client,
-		Presigner:  presignClient,
-		BucketName: ConfigEnv.AppConfig.BucketName,
-		Region:     ConfigEnv.AppConfig.AWSRegion,
+		Client:             client,
+		PutObjectClient:    client,
+		DeleteObjectClient: client,
+		Presigner:          presignClient,
+		BucketName:         ConfigEnv.AppConfig.BucketName,
+		Region:             ConfigEnv.AppConfig.AWSRegion,
 	}, nil
 }
 
 func (u *S3Uploader) UploadFile(file multipart.File, fileHeader *multipart.FileHeader, key string) error {
-	_, err := u.Client.PutObject(context.TODO(), &s3.PutObjectInput{
+	client := u.PutObjectClient
+	if client == nil {
+		client = u.Client
+	}
+	if client == nil {
+		return fmt.Errorf("S3 client is not initialized")
+	}
+
+	_, err := client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket:      aws.String(u.BucketName),
 		Key:         aws.String(key),
 		Body:        file,
@@ -63,6 +91,10 @@ func (u *S3Uploader) UploadFile(file multipart.File, fileHeader *multipart.FileH
 
 func (u *S3Uploader) DeleteObject(prefix string, isFolder bool) error {
 	if isFolder {
+		if u.Client == nil {
+			return fmt.Errorf("S3 client is not initialized")
+		}
+
 		listInput := &s3.ListObjectsV2Input{
 			Bucket: aws.String(u.BucketName),
 			Prefix: aws.String(prefix),
@@ -88,7 +120,16 @@ func (u *S3Uploader) DeleteObject(prefix string, isFolder bool) error {
 		})
 		return err
 	}
-	_, err := u.Client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
+
+	client := u.DeleteObjectClient
+	if client == nil {
+		client = u.Client
+	}
+	if client == nil {
+		return fmt.Errorf("S3 client is not initialized")
+	}
+
+	_, err := client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
 		Bucket: aws.String(u.BucketName),
 		Key:    aws.String(prefix),
 	})
