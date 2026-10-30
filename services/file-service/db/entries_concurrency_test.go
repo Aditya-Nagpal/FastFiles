@@ -107,7 +107,8 @@ func TestConcurrentUploadAndFolderDeletion(t *testing.T) {
 	// Reserve quota before starting the competing operations.
 	const fileSize int64 = 123
 
-	if err := ReserveStorage(ctx, userID, fileSize); err != nil {
+	reservationID, err := CreateStorageReservation(ctx, userID, fileSize)
+	if err != nil {
 		t.Fatalf("reserve upload quota: %v", err)
 	}
 
@@ -135,7 +136,7 @@ func TestConcurrentUploadAndFolderDeletion(t *testing.T) {
 
 	go func() {
 		<-start
-		_, err := InsertEntryAndFinalizeStorage(ctx, file)
+		_, err := InsertEntryAndFinalizeStorage(ctx, file, reservationID)
 		uploadResult <- err
 	}()
 
@@ -719,7 +720,8 @@ func TestConcurrentInsertEntryAndFinalizeStorageVsDeleteFolder(t *testing.T) {
 
 	const fileSize int64 = 123
 
-	if err := ReserveStorage(ctx, userID, fileSize); err != nil {
+	reservationID, err := CreateStorageReservation(ctx, userID, fileSize)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -746,7 +748,7 @@ func TestConcurrentInsertEntryAndFinalizeStorageVsDeleteFolder(t *testing.T) {
 
 	go func() {
 		<-start
-		_, err := InsertEntryAndFinalizeStorage(ctx, file)
+		_, err := InsertEntryAndFinalizeStorage(ctx, file, reservationID)
 		uploadDone <- err
 	}()
 
@@ -916,7 +918,8 @@ func TestSuccessfulUploadThenFolderDeletion(t *testing.T) {
 	}
 
 	const fileSize int64 = 123
-	if err := ReserveStorage(ctx, userID, fileSize); err != nil {
+	reservationID, err := CreateStorageReservation(ctx, userID, fileSize)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -938,7 +941,7 @@ func TestSuccessfulUploadThenFolderDeletion(t *testing.T) {
 	}
 
 	// Phase 1: upload must succeed before deletion begins.
-	newID, err := InsertEntryAndFinalizeStorage(ctx, file)
+	newID, err := InsertEntryAndFinalizeStorage(ctx, file, reservationID)
 	if err != nil {
 		_ = ReleaseStorageReservation(ctx, userID, fileSize)
 		t.Fatalf("expected upload to succeed, got: %v", err)

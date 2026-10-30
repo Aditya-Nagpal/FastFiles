@@ -125,22 +125,22 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 		return fmt.Errorf("invalid file size")
 	}
 
-	// Reserve quota before uploading to S3.
 	ctx := c.Request.Context()
-	if err := db.ReserveStorage(ctx, userId, size); err != nil {
+
+	// 1. Create an individual storage reservation.
+	reservationID, err := db.CreateStorageReservation(ctx, userId, size)
+	if err != nil {
 		return err
 	}
 
 	reservationPending := true
+
+	// 2. Release this exact reservation if upload fails.
 	defer func() {
 		if reservationPending {
 			// Best-effort cleanup. Log failures for monitoring/reconciliation.
-			if err := db.ReleaseStorageReservation(
-				context.Background(),
-				userId,
-				size,
-			); err != nil {
-				log.Printf("Failed to release storage reservation for user %d: %v", userId, err)
+			if err := db.ReleaseStorageReservationByID(context.Background(), reservationID); err != nil {
+				log.Printf("Failed to release reservation %d for user %d: %v", reservationID, userId, err)
 			}
 		}
 	}()
@@ -148,6 +148,7 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 	baseName, ext := utils.ParseFilename(header.Filename)
 	s3Key := utils.CreateS3Key(userId, publicId, ext)
 
+	// 3. Upload file to S3.
 	if err = uploader.UploadFile(file, header, s3Key); err != nil {
 		return err
 	}
@@ -168,7 +169,8 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 		UpdatedAt:   time.Now(),
 	}
 
-	newID, err := db.InsertEntryAndFinalizeStorage(c.Request.Context(), &entryData)
+	// 4. Insert entry and finalize this exact reservation.
+	newID, err := db.InsertEntryAndFinalizeStorage(c.Request.Context(), &entryData, reservationID)
 	if err != nil {
 		// S3 upload succeeded, but database persistence failed.
 		// Try to remove the orphaned S3 object
@@ -178,9 +180,10 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 		return err
 	}
 
-	// The transaction converted reserved bytes into used bytes.
+	// 5. Reservation is now FINALIZED.
 	reservationPending = false
 
+	// 6. Queue PDF embedding task.
 	if entryData.ContentType == "application/pdf" {
 		err = taskService.EnqueueGenerateEmbeddingTask(newID, s3Key)
 		if err != nil {

@@ -129,7 +129,7 @@ func InsertEntryData(ctx context.Context, data *models.EntryData) error {
 	return tx.Commit(ctx)
 }
 
-func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) (int64, error) {
+func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData, reservationID int64) (int64, error) {
 	tx, err := DB.Begin(ctx)
 	if err != nil {
 		return 0, err
@@ -144,12 +144,10 @@ func InsertEntryAndFinalizeStorage(ctx context.Context, data *models.EntryData) 
 		}
 	}
 
-	// 2. Convert reserved bytes into used bytes.
-	if data.Size > 0 {
-		_, err = ReleaseStorageReservationUsingTransaction(tx, ctx, data)
-		if err != nil {
-			return 0, fmt.Errorf("failed to finalize storage reservation: %w", err)
-		}
+	// 2. Finalize the specific reservation.
+	err = FinalizeStorageReservationUsingTransaction(tx, ctx, reservationID, data.UserId, data.Size)
+	if err != nil {
+		return 0, fmt.Errorf("failed to finalize storage reservation: %w", err)
 	}
 
 	// 3. Insert the entry.
