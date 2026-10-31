@@ -80,10 +80,17 @@ func TestUploadFile_S3FailureReleasesReservation(t *testing.T) {
 			`DELETE FROM outbox_events WHERE aggregate_id = $1`,
 			publicID,
 		)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM entries WHERE user_id = $1`,
 			userID,
 		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`,
+			userID,
+		)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM user_storage WHERE user_id = $1`,
 			userID,
@@ -245,9 +252,16 @@ func TestUploadFile_DBFailureCleansUpS3AndReservation(t *testing.T) {
 			`DELETE FROM outbox_events WHERE aggregate_id = ANY($1::varchar[])`,
 			[]string{folderPublicID, filePublicID},
 		)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM entries WHERE user_id = $1`, userID,
 		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`,
+			userID,
+		)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM user_storage WHERE user_id = $1`, userID,
 		)
@@ -424,8 +438,13 @@ func TestUploadFile_ReservationReleaseFailure(t *testing.T) {
 
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM outbox_events WHERE aggregate_id = $1`, publicID)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM entries WHERE user_id = $1`, userID)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`, userID)
+
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM user_storage WHERE user_id = $1`, userID)
 	})
@@ -548,5 +567,271 @@ func TestUploadFile_ReservationReleaseFailure(t *testing.T) {
 	t.Logf(
 		"PASS: S3 failed; reservation release was blocked; used=%d, reserved before recovery=%d; recovery succeeded",
 		usedBytes, reservedBytes,
+	)
+}
+
+type blockingFakeS3PutObjectClient struct {
+	started chan struct{}
+	finish  chan struct{}
+}
+
+func (f *blockingFakeS3PutObjectClient) PutObject(
+	ctx context.Context,
+	params *s3.PutObjectInput,
+	optFns ...func(*s3.Options),
+) (*s3.PutObjectOutput, error) {
+	close(f.started)
+
+	select {
+	case <-f.finish:
+		return &s3.PutObjectOutput{}, nil
+
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestUploadFile_LongRunningUploadKeepsReservationAlive(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if os.Getenv("DATABASE_URL") == "" {
+		_ = godotenv.Load("../.env")
+	}
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("DATABASE_URL is not set")
+	}
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping PostgreSQL: %v", err)
+	}
+
+	userID := time.Now().UnixNano()
+	publicID := fmt.Sprintf("f%019d", userID%1_000_000_000_000_000_000)
+
+	previousDB := db.DB
+	db.DB = pool
+	defer func() {
+		db.DB = previousDB
+	}()
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
+		defer cleanupCancel()
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM outbox_events WHERE aggregate_id = $1`,
+			publicID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM entries WHERE user_id = $1`,
+			userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`,
+			userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`,
+			userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM user_storage WHERE user_id = $1`,
+			userID,
+		)
+	})
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO user_storage
+			(user_id, quota_bytes, used_bytes, reserved_bytes)
+		VALUES ($1, $2, 0, 0)
+	`, userID, int64(1<<30))
+	if err != nil {
+		t.Fatalf("create storage record: %v", err)
+	}
+
+	// Prepare multipart upload.
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile("file", "long-running-test.txt")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+
+	const fileContents = "simulated long-running upload"
+	if _, err := part.Write([]byte(fileContents)); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/upload", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = request
+
+	// Fake S3 upload blocks until the test allows it to finish.
+	fakeS3 := &blockingFakeS3PutObjectClient{
+		started: make(chan struct{}),
+		finish:  make(chan struct{}),
+	}
+
+	uploader := &utils.S3Uploader{
+		PutObjectClient: fakeS3,
+		BucketName:      "test-bucket",
+	}
+
+	uploadDone := make(chan error, 1)
+
+	// Use short test-only lease and heartbeat intervals.
+	go func() {
+		uploadDone <- uploadFileWithHeartbeat(
+			c,
+			uploader,
+			nil,
+			userID,
+			publicID,
+			nil,
+			50*time.Millisecond,
+			300*time.Millisecond,
+			db.RenewStorageReservation,
+		)
+	}()
+
+	// Wait until S3 upload starts.
+	select {
+	case <-fakeS3.started:
+	case <-ctx.Done():
+		t.Fatal("S3 upload did not start")
+	}
+
+	// Wait longer than the original 300ms lease.
+	// Several heartbeat renewals should happen during this time.
+	time.Sleep(450 * time.Millisecond)
+
+	var reservationID int64
+	var leaseExpiresAt time.Time
+
+	err = pool.QueryRow(ctx, `
+		SELECT id, lease_expires_at
+		FROM storage_reservations
+		WHERE user_id = $1
+		  AND status = 'PENDING'
+	`, userID).Scan(&reservationID, &leaseExpiresAt)
+	if err != nil {
+		t.Fatalf("read pending reservation: %v", err)
+	}
+
+	// The lease must have been extended beyond its original expiry.
+	if !leaseExpiresAt.After(time.Now().Add(100 * time.Millisecond)) {
+		t.Fatalf(
+			"reservation lease was not renewed sufficiently; expires at %v",
+			leaseExpiresAt,
+		)
+	}
+
+	// Run the real recovery function while the upload is still active.
+	recovered, err := db.RecoverExpiredStorageReservations(ctx, 100)
+	if err != nil {
+		t.Fatalf("run reservation recovery: %v", err)
+	}
+
+	if recovered != 0 {
+		t.Fatalf(
+			"recovery released %d reservations during an active upload; want 0",
+			recovered,
+		)
+	}
+
+	// Confirm reservation is still pending.
+	var status string
+	err = pool.QueryRow(ctx, `
+		SELECT status
+		FROM storage_reservations
+		WHERE id = $1
+	`, reservationID).Scan(&status)
+	if err != nil {
+		t.Fatalf("read reservation status: %v", err)
+	}
+
+	if status != "PENDING" {
+		t.Fatalf("reservation status = %s; want PENDING", status)
+	}
+
+	// Allow S3 upload to finish.
+	close(fakeS3.finish)
+
+	select {
+	case err := <-uploadDone:
+		if err != nil {
+			t.Fatalf("upload failed: %v", err)
+		}
+
+	case <-ctx.Done():
+		t.Fatal("upload did not finish before timeout")
+	}
+
+	// Verify final quota accounting.
+	var usedBytes, reservedBytes int64
+	err = pool.QueryRow(ctx, `
+		SELECT used_bytes, reserved_bytes
+		FROM user_storage
+		WHERE user_id = $1
+	`, userID).Scan(&usedBytes, &reservedBytes)
+	if err != nil {
+		t.Fatalf("read storage usage: %v", err)
+	}
+
+	expectedSize := int64(len(fileContents))
+
+	if usedBytes != expectedSize {
+		t.Errorf("used_bytes = %d; want %d", usedBytes, expectedSize)
+	}
+
+	if reservedBytes != 0 {
+		t.Errorf("reserved_bytes = %d; want 0", reservedBytes)
+	}
+
+	err = pool.QueryRow(ctx, `
+		SELECT status
+		FROM storage_reservations
+		WHERE id = $1
+	`, reservationID).Scan(&status)
+	if err != nil {
+		t.Fatalf("read finalized reservation: %v", err)
+	}
+
+	if status != "FINALIZED" {
+		t.Errorf("reservation status = %s; want FINALIZED", status)
+	}
+
+	t.Logf(
+		"PASS: long upload survived original lease expiry; recovery=%d, used=%d, reserved=%d, status=%s",
+		recovered,
+		usedBytes,
+		reservedBytes,
+		status,
 	)
 }

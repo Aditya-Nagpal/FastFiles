@@ -26,8 +26,7 @@ func StartStorageReservationHeartbeat(
 	parentCtx context.Context,
 	reservationID int64,
 ) (context.Context, func() error) {
-
-	return startStorageReservationHeartbeatWith(
+	return StartStorageReservationHeartbeatWith(
 		parentCtx,
 		reservationID,
 		reservationHeartbeatInterval,
@@ -38,7 +37,7 @@ func StartStorageReservationHeartbeat(
 
 // startStorageReservationHeartbeatWith contains the actual heartbeat logic.
 // It accepts configurable intervals and a renewal function for testing.
-func startStorageReservationHeartbeatWith(
+func StartStorageReservationHeartbeatWith(
 	parentCtx context.Context,
 	reservationID int64,
 	heartbeatInterval time.Duration,

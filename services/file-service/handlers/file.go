@@ -114,6 +114,20 @@ func Upload(uploader *utils.S3Uploader, taskService *tasks.TaskService) gin.Hand
 }
 
 func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.TaskService, userId int64, publicId string, internalParentID *int64) error {
+	return uploadFileWithHeartbeat(c, uploader, taskService, userId, publicId, internalParentID, reservationHeartbeatInterval, reservationLeaseDuration, db.RenewStorageReservation)
+}
+
+func uploadFileWithHeartbeat(
+	c *gin.Context,
+	uploader *utils.S3Uploader,
+	taskService *tasks.TaskService,
+	userId int64,
+	publicId string,
+	internalParentID *int64,
+	heartbeatInterval time.Duration,
+	leaseDuration time.Duration,
+	renew reservationRenewFunc,
+) error {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		return err
@@ -149,7 +163,7 @@ func UploadFile(c *gin.Context, uploader *utils.S3Uploader, taskService *tasks.T
 	s3Key := utils.CreateS3Key(userId, publicId, ext)
 
 	// 3. Start reservation heartbeat before S3 upload.
-	uploadCtx, stopHeartbeat := StartStorageReservationHeartbeat(ctx, reservationID)
+	uploadCtx, stopHeartbeat := StartStorageReservationHeartbeatWith(ctx, reservationID, heartbeatInterval, leaseDuration, renew)
 
 	// 4. Upload file to S3 using the heartbeat-managed context.
 	uploadErr := uploader.UploadFile(uploadCtx, file, header, s3Key)

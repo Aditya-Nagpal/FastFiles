@@ -32,7 +32,7 @@ func TestStorageReservationHeartbeatRenewsSuccessfully(t *testing.T) {
 		return nil
 	}
 
-	uploadCtx, stopHeartbeat := startStorageReservationHeartbeatWith(
+	uploadCtx, stopHeartbeat := StartStorageReservationHeartbeatWith(
 		context.Background(),
 		123,
 		20*time.Millisecond,
@@ -75,7 +75,7 @@ func TestStorageReservationHeartbeatCancelsUploadOnRenewalFailure(t *testing.T) 
 		return expectedErr
 	}
 
-	uploadCtx, stopHeartbeat := startStorageReservationHeartbeatWith(
+	uploadCtx, stopHeartbeat := StartStorageReservationHeartbeatWith(
 		context.Background(),
 		456,
 		20*time.Millisecond,
@@ -130,7 +130,7 @@ func TestStorageReservationHeartbeatStopsOnParentCancellation(t *testing.T) {
 		return nil
 	}
 
-	uploadCtx, stopHeartbeat := startStorageReservationHeartbeatWith(
+	uploadCtx, stopHeartbeat := StartStorageReservationHeartbeatWith(
 		parentCtx,
 		789,
 		1*time.Second,
