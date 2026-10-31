@@ -461,3 +461,89 @@ func TestConcurrentS3CleanupTaskClaim(t *testing.T) {
 		workerCount,
 	)
 }
+
+func TestClaimStaleS3CleanupTask(t *testing.T) {
+	ctx := setupS3CleanupTest(t)
+
+	taskID := createTestS3CleanupTask(t, ctx)
+
+	// Simulate a worker claiming the task and then crashing.
+	claimedTask, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatalf("initial claim: %v", err)
+	}
+
+	if claimedTask == nil {
+		t.Fatal("expected task to be claimed")
+	}
+
+	if claimedTask.ID != taskID {
+		t.Fatalf("claimed task ID = %d; want %d", claimedTask.ID, taskID)
+	}
+
+	if claimedTask.Attempts != 1 {
+		t.Fatalf("initial attempts = %d; want 1", claimedTask.Attempts)
+	}
+
+	// Simulate a worker crash by making updated_at older than 2 minutes.
+	_, err = DB.Exec(ctx, `
+		UPDATE s3_cleanup_tasks
+		SET updated_at = CURRENT_TIMESTAMP - INTERVAL '3 minutes'
+		WHERE id = $1
+	`, taskID)
+
+	if err != nil {
+		t.Fatalf("make cleanup task stale: %v", err)
+	}
+
+	// The stale PROCESSING task should now be reclaimed.
+	reclaimedTask, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatalf("reclaim stale cleanup task: %v", err)
+	}
+
+	if reclaimedTask == nil {
+		t.Fatal("expected stale task to be reclaimed, got nil")
+	}
+
+	if reclaimedTask.ID != taskID {
+		t.Fatalf("reclaimed task ID = %d; want %d", reclaimedTask.ID, taskID)
+	}
+
+	if reclaimedTask.Status != "PROCESSING" {
+		t.Errorf("status = %s; want PROCESSING", reclaimedTask.Status)
+	}
+
+	if reclaimedTask.Attempts != 2 {
+		t.Errorf("attempts = %d; want 2", reclaimedTask.Attempts)
+	}
+
+	// Verify the persisted database state.
+	var status string
+	var attempts int
+
+	err = DB.QueryRow(ctx, `
+		SELECT status, attempts
+		FROM s3_cleanup_tasks
+		WHERE id = $1
+	`, taskID).Scan(&status, &attempts)
+
+	if err != nil {
+		t.Fatalf("verify reclaimed task: %v", err)
+	}
+
+	if status != "PROCESSING" {
+		t.Errorf("database status = %s; want PROCESSING", status)
+	}
+
+	if attempts != 2 {
+		t.Errorf("database attempts = %d; want 2", attempts)
+	}
+
+	t.Logf(
+		"PASS: stale task reclaimed; task_id=%d, status=%s, attempts=%d",
+		taskID,
+		status,
+		attempts,
+	)
+}

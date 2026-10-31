@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -236,6 +237,7 @@ func TestUploadFile_DBFailureCleansUpS3AndReservation(t *testing.T) {
 	suffix := fmt.Sprintf("%019d", userID%1_000_000_000_000_000_000)
 	folderPublicID := "r" + suffix
 	filePublicID := "f" + suffix
+	s3Key := utils.CreateS3Key(userID, filePublicID, "txt")
 
 	previousDB := db.DB
 	db.DB = pool
@@ -248,6 +250,10 @@ func TestUploadFile_DBFailureCleansUpS3AndReservation(t *testing.T) {
 			context.Background(), 5*time.Second,
 		)
 		defer cleanupCancel()
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM s3_cleanup_tasks WHERE bucket_name = $1 AND s3_key = $2`, "test-bucket", s3Key,
+		)
 
 		_, _ = pool.Exec(cleanupCtx,
 			`DELETE FROM outbox_events WHERE aggregate_id = ANY($1::varchar[])`,
@@ -329,13 +335,36 @@ func TestUploadFile_DBFailureCleansUpS3AndReservation(t *testing.T) {
 		BucketName:         "test-bucket",
 	}
 
-	err = UploadFile(c, uploader, nil, userID, filePublicID, &folderID)
-	if err == nil {
+	uploadErr := UploadFile(c, uploader, nil, userID, filePublicID, &folderID)
+	if uploadErr == nil {
 		t.Fatal("expected DB finalization to fail for a deleted destination folder")
 	}
 
 	if fakeDelete.calls != 1 {
 		t.Errorf("expected one S3 cleanup attempt, got %d", fakeDelete.calls)
+	}
+
+	// Verify that immediate S3 cleanup marked the task COMPLETED.
+	var cleanupStatus string
+
+	err = pool.QueryRow(ctx, `
+    SELECT status
+    FROM s3_cleanup_tasks
+    WHERE bucket_name = $1
+      AND s3_key = $2
+    ORDER BY id DESC
+    LIMIT 1
+`, "test-bucket", s3Key).Scan(&cleanupStatus)
+
+	if err != nil {
+		t.Fatalf("failed to fetch S3 cleanup task: %v", err)
+	}
+
+	if cleanupStatus != "COMPLETED" {
+		t.Errorf(
+			"cleanup task status = %s; want COMPLETED",
+			cleanupStatus,
+		)
 	}
 
 	// Reservation should have been released by UploadFile's deferred cleanup.
@@ -372,8 +401,13 @@ func TestUploadFile_DBFailureCleansUpS3AndReservation(t *testing.T) {
 	}
 
 	t.Logf(
-		"PASS: DB failure=%v, cleanup calls=%d, used=%d, reserved=%d, file entries=%d",
-		err, fakeDelete.calls, usedBytes, reservedBytes, fileCount,
+		"PASS: DB failure=%v, cleanup calls=%d, cleanup status=%s, used=%d, reserved=%d, file entries=%d",
+		uploadErr,
+		fakeDelete.calls,
+		cleanupStatus,
+		usedBytes,
+		reservedBytes,
+		fileCount,
 	)
 }
 
@@ -1513,6 +1547,228 @@ func TestConcurrentRecoveryWorkers(t *testing.T) {
 		"PASS: two workers recovered %d reservations; released=%d, used=%d, reserved=%d",
 		totalRecovered,
 		releasedCount,
+		usedBytes,
+		reservedBytes,
+	)
+}
+
+func TestUploadFile_DBFailure_S3CleanupFailureSchedulesRetry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if os.Getenv("DATABASE_URL") == "" {
+		_ = godotenv.Load("../.env")
+	}
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("DATABASE_URL is not set")
+	}
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping PostgreSQL: %v", err)
+	}
+
+	userID := time.Now().UnixNano()
+	suffix := fmt.Sprintf("%019d", userID%1_000_000_000_000_000_000)
+	folderPublicID := "r" + suffix
+	filePublicID := "f" + suffix
+	s3Key := utils.CreateS3Key(userID, filePublicID, "txt")
+
+	previousDB := db.DB
+	db.DB = pool
+	defer func() {
+		db.DB = previousDB
+	}()
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		defer cleanupCancel()
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM s3_cleanup_tasks
+			 WHERE bucket_name = $1 AND s3_key = $2`,
+			"test-bucket", s3Key,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM outbox_events WHERE aggregate_id = ANY($1::varchar[])`,
+			[]string{folderPublicID, filePublicID},
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM entries WHERE user_id = $1`, userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`,
+			userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM user_storage WHERE user_id = $1`, userID,
+		)
+	})
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO user_storage
+			(user_id, quota_bytes, used_bytes, reserved_bytes)
+		VALUES ($1, $2, 0, 0)
+	`, userID, int64(1<<30))
+	if err != nil {
+		t.Fatalf("create storage record: %v", err)
+	}
+
+	// Create destination folder.
+	var folderID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO entries (public_id, user_id, name, type, extension)
+		VALUES ($1, $2, 'test-folder', 'FOLDER', '')
+		RETURNING id
+	`, folderPublicID, userID).Scan(&folderID)
+	if err != nil {
+		t.Fatalf("create test folder: %v", err)
+	}
+
+	// Soft-delete folder so DB finalization fails.
+	_, err = pool.Exec(ctx, `
+		UPDATE entries
+		SET deleted_at = CURRENT_TIMESTAMP,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND user_id = $2
+	`, folderID, userID)
+	if err != nil {
+		t.Fatalf("soft-delete test folder: %v", err)
+	}
+
+	// Build multipart request.
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile("file", "db-failure-test.txt")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+
+	if _, err := part.Write([]byte("test content")); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/upload", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = request
+
+	// S3 upload succeeds, but cleanup deletion fails.
+	expectedDeleteErr := errors.New("simulated S3 deletion failure")
+
+	fakeDelete := &fakeS3DeleteObjectClient{
+		err: expectedDeleteErr,
+	}
+
+	uploader := &utils.S3Uploader{
+		PutObjectClient:    &fakeS3PutObjectClient{},
+		DeleteObjectClient: fakeDelete,
+		BucketName:         "test-bucket",
+	}
+
+	uploadErr := UploadFile(c, uploader, nil, userID, filePublicID, &folderID)
+	if uploadErr == nil {
+		t.Fatal("expected DB finalization to fail")
+	}
+
+	if fakeDelete.calls != 1 {
+		t.Fatalf("expected one S3 cleanup attempt, got %d", fakeDelete.calls)
+	}
+
+	// Verify cleanup task was persisted and retry was scheduled.
+	var status string
+	var attempts int
+	var nextRetryAt time.Time
+	var lastError *string
+
+	err = pool.QueryRow(ctx, `
+		SELECT status, attempts, next_retry_at, last_error
+		FROM s3_cleanup_tasks
+		WHERE bucket_name = $1 AND s3_key = $2
+		ORDER BY id DESC
+		LIMIT 1
+	`, "test-bucket", s3Key).Scan(
+		&status,
+		&attempts,
+		&nextRetryAt,
+		&lastError,
+	)
+	if err != nil {
+		t.Fatalf("failed to fetch cleanup task: %v", err)
+	}
+
+	if status != "PENDING" {
+		t.Errorf("status = %s; want PENDING", status)
+	}
+
+	if attempts != 0 {
+		t.Errorf("attempts = %d; want 0", attempts)
+	}
+
+	if !nextRetryAt.After(time.Now()) {
+		t.Errorf("next_retry_at = %v; want a future timestamp", nextRetryAt)
+	}
+
+	if lastError == nil {
+		t.Fatal("last_error is NULL; expected deletion error")
+	}
+
+	if *lastError != expectedDeleteErr.Error() &&
+		!strings.Contains(*lastError, expectedDeleteErr.Error()) {
+		t.Errorf(
+			"last_error = %q; want it to contain %q",
+			*lastError,
+			expectedDeleteErr.Error(),
+		)
+	}
+
+	// Verify reservation was released.
+	var usedBytes, reservedBytes int64
+	err = pool.QueryRow(ctx, `
+		SELECT used_bytes, reserved_bytes
+		FROM user_storage
+		WHERE user_id = $1
+	`, userID).Scan(&usedBytes, &reservedBytes)
+	if err != nil {
+		t.Fatalf("read storage usage: %v", err)
+	}
+
+	if usedBytes != 0 {
+		t.Errorf("used_bytes = %d; want 0", usedBytes)
+	}
+
+	if reservedBytes != 0 {
+		t.Errorf("reserved_bytes = %d; want 0", reservedBytes)
+	}
+
+	t.Logf(
+		"PASS: cleanup failure persisted; status=%s, attempts=%d, retry_at=%v, last_error=%s, used=%d, reserved=%d",
+		status,
+		attempts,
+		nextRetryAt,
+		*lastError,
 		usedBytes,
 		reservedBytes,
 	)
