@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/db"
@@ -14,24 +15,50 @@ const (
 	reservationRenewalTimeout    = 10 * time.Second
 )
 
-func StartStorageReservationHeartbeat(parentCtx context.Context, reservationID int64) (context.Context, func() error) {
+// reservationRenewFunc allows us to inject renewal behaviour in tests.
+type reservationRenewFunc func(
+	ctx context.Context,
+	reservationID int64,
+	leaseDuration time.Duration,
+) error
 
-	// S3 upload gets its own cancellable context.
+func StartStorageReservationHeartbeat(
+	parentCtx context.Context,
+	reservationID int64,
+) (context.Context, func() error) {
+
+	return startStorageReservationHeartbeatWith(
+		parentCtx,
+		reservationID,
+		reservationHeartbeatInterval,
+		reservationLeaseDuration,
+		db.RenewStorageReservation,
+	)
+}
+
+// startStorageReservationHeartbeatWith contains the actual heartbeat logic.
+// It accepts configurable intervals and a renewal function for testing.
+func startStorageReservationHeartbeatWith(
+	parentCtx context.Context,
+	reservationID int64,
+	heartbeatInterval time.Duration,
+	leaseDuration time.Duration,
+	renew reservationRenewFunc,
+) (context.Context, func() error) {
+
 	uploadCtx, cancelUpload := context.WithCancel(parentCtx)
-
-	// Heartbeat has a separate context so stopping it does not
-	// prematurely cancel the upload context.
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(parentCtx)
 
 	stop := make(chan struct{})
 	done := make(chan struct{})
 
 	var heartbeatErr error
+	var stopOnce sync.Once
 
 	go func() {
 		defer close(done)
 
-		ticker := time.NewTicker(reservationHeartbeatInterval)
+		ticker := time.NewTicker(heartbeatInterval)
 		defer ticker.Stop()
 
 		for {
@@ -48,10 +75,10 @@ func StartStorageReservationHeartbeat(parentCtx context.Context, reservationID i
 					reservationRenewalTimeout,
 				)
 
-				err := db.RenewStorageReservation(
+				err := renew(
 					renewCtx,
 					reservationID,
-					reservationLeaseDuration,
+					leaseDuration,
 				)
 
 				cancel()
@@ -63,7 +90,6 @@ func StartStorageReservationHeartbeat(parentCtx context.Context, reservationID i
 						err,
 					)
 
-					// Stop the ongoing S3 upload.
 					cancelUpload()
 					return
 				}
@@ -72,14 +98,15 @@ func StartStorageReservationHeartbeat(parentCtx context.Context, reservationID i
 	}()
 
 	stopAndWait := func() error {
-		close(stop)
+		stopOnce.Do(func() {
+			close(stop)
 
-		// Wait until any ongoing renewal finishes.
-		// After this, no heartbeat can race with finalization.
-		<-done
+			// Wait for any ongoing renewal to finish.
+			<-done
 
-		cancelHeartbeat()
-		cancelUpload()
+			cancelHeartbeat()
+			cancelUpload()
+		})
 
 		return heartbeatErr
 	}
