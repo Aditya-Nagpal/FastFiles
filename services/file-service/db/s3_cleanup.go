@@ -102,7 +102,6 @@ func ClaimNextS3CleanupTask(ctx context.Context) (*models.S3CleanupTask, error) 
 	return &task, nil
 }
 
-// MarkS3CleanupCompleted marks a successfully deleted object as completed.
 func MarkS3CleanupCompleted(ctx context.Context, taskID int64) error {
 	query := `
 		UPDATE s3_cleanup_tasks
@@ -110,26 +109,22 @@ func MarkS3CleanupCompleted(ctx context.Context, taskID int64) error {
 			last_error = NULL,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-		  AND status = 'PROCESSING'
+		  AND status IN ('PENDING', 'PROCESSING')
 	`
 
 	tag, err := DB.Exec(ctx, query, taskID)
 	if err != nil {
 		return fmt.Errorf("failed to complete S3 cleanup task %d: %w", taskID, err)
 	}
+
 	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("S3 cleanup task %d not found or not processing", taskID)
+		return fmt.Errorf("S3 cleanup task %d not found or already completed", taskID)
 	}
 
 	return nil
 }
 
-// MarkS3CleanupFailed schedules a retry or permanently fails the task.
-func MarkS3CleanupFailed(
-	ctx context.Context,
-	taskID int64,
-	cleanupErr error,
-) error {
+func MarkS3CleanupFailed(ctx context.Context, taskID int64, cleanupErr error) error {
 	if cleanupErr == nil {
 		return fmt.Errorf("cleanup error cannot be nil")
 	}
@@ -141,12 +136,12 @@ func MarkS3CleanupFailed(
 				ELSE 'PENDING'
 			END,
 			next_retry_at = CURRENT_TIMESTAMP
-				+ LEAST(POWER(2, LEAST(attempts - 1, 8)), 300)
+				+ LEAST(POWER(2, LEAST(GREATEST(attempts, 1) - 1, 8)), 300)
 				  * INTERVAL '1 second',
 			last_error = $2,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-		  AND status = 'PROCESSING'
+		  AND status IN ('PENDING', 'PROCESSING')
 	`
 
 	tag, err := DB.Exec(ctx, query, taskID, cleanupErr.Error())

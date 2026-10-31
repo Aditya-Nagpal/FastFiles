@@ -174,17 +174,8 @@ func uploadFileWithHeartbeat(
 	// 6. If heartbeat failed, do not proceed with DB finalization.
 	if heartbeatErr != nil {
 		if uploadErr == nil {
-			// S3 upload succeeded, but reservation renewal failed.
-			// Remove the uploaded object to avoid an orphan.
-			if cleanupErr := uploader.DeleteObject(s3Key, false); cleanupErr != nil {
-				log.Printf(
-					"Failed to cleanup S3 object %s after heartbeat failure: %v",
-					s3Key,
-					cleanupErr,
-				)
-			}
+			CleanupUploadedS3Object(uploader, s3Key)
 		}
-
 		return heartbeatErr
 	}
 
@@ -211,11 +202,7 @@ func uploadFileWithHeartbeat(
 	// 7. Insert entry and finalize this exact reservation.
 	newID, err := db.InsertEntryAndFinalizeStorage(c.Request.Context(), &entryData, reservationID)
 	if err != nil {
-		// S3 upload succeeded, but database persistence failed.
-		// Try to remove the orphaned S3 object
-		if cleanupErr := uploader.DeleteObject(s3Key, false); cleanupErr != nil {
-			log.Printf("Failed to clean up S3 object %s: %v", s3Key, cleanupErr)
-		}
+		CleanupUploadedS3Object(uploader, s3Key)
 		return err
 	}
 
