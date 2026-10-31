@@ -835,3 +835,657 @@ func TestUploadFile_LongRunningUploadKeepsReservationAlive(t *testing.T) {
 		status,
 	)
 }
+
+func TestUploadFile_HeartbeatFailureCancelsUploadAndReleasesReservation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if os.Getenv("DATABASE_URL") == "" {
+		_ = godotenv.Load("../.env")
+	}
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("DATABASE_URL is not set")
+	}
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping PostgreSQL: %v", err)
+	}
+
+	userID := time.Now().UnixNano()
+	publicID := fmt.Sprintf("f%019d", userID%1_000_000_000_000_000_000)
+
+	previousDB := db.DB
+	db.DB = pool
+	defer func() {
+		db.DB = previousDB
+	}()
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
+		defer cleanupCancel()
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM outbox_events WHERE aggregate_id = $1`,
+			publicID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM entries WHERE user_id = $1`,
+			userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`,
+			userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM user_storage WHERE user_id = $1`,
+			userID,
+		)
+	})
+
+	// Create storage record.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO user_storage
+			(user_id, quota_bytes, used_bytes, reserved_bytes)
+		VALUES ($1, $2, 0, 0)
+	`, userID, int64(1<<30))
+	if err != nil {
+		t.Fatalf("create storage record: %v", err)
+	}
+
+	// Prepare multipart upload.
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile("file", "heartbeat-failure.txt")
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+
+	const fileContents = "simulate heartbeat renewal failure"
+
+	if _, err := part.Write([]byte(fileContents)); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/upload", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = request
+
+	// Fake S3 upload waits until its context is cancelled.
+	fakeS3 := &blockingFakeS3PutObjectClient{
+		started: make(chan struct{}),
+		finish:  make(chan struct{}),
+	}
+
+	uploader := &utils.S3Uploader{
+		PutObjectClient: fakeS3,
+		BucketName:      "test-bucket",
+	}
+
+	// Simulate a database failure during heartbeat renewal.
+	expectedRenewalError := errors.New("simulated database renewal failure")
+
+	renewalCalled := make(chan struct{}, 1)
+
+	renew := func(
+		renewCtx context.Context,
+		reservationID int64,
+		leaseDuration time.Duration,
+	) error {
+		renewalCalled <- struct{}{}
+		return expectedRenewalError
+	}
+
+	uploadDone := make(chan error, 1)
+
+	go func() {
+		uploadDone <- uploadFileWithHeartbeat(
+			c,
+			uploader,
+			nil,
+			userID,
+			publicID,
+			nil,
+			20*time.Millisecond,
+			300*time.Millisecond,
+			renew,
+		)
+	}()
+
+	// Wait until S3 upload starts.
+	select {
+	case <-fakeS3.started:
+	case <-ctx.Done():
+		t.Fatal("S3 upload did not start")
+	}
+
+	// Wait until heartbeat attempts renewal.
+	select {
+	case <-renewalCalled:
+	case <-ctx.Done():
+		t.Fatal("heartbeat did not attempt renewal")
+	}
+
+	// Upload should be cancelled after renewal failure.
+	select {
+	case err := <-uploadDone:
+		if err == nil {
+			t.Fatal("expected upload to fail after heartbeat renewal failure")
+		}
+
+		if !errors.Is(err, expectedRenewalError) {
+			t.Fatalf(
+				"expected heartbeat error %v, got %v",
+				expectedRenewalError,
+				err,
+			)
+		}
+
+	case <-ctx.Done():
+		t.Fatal("upload did not stop after heartbeat renewal failure")
+	}
+
+	// Verify reservation cleanup.
+	var usedBytes, reservedBytes int64
+
+	err = pool.QueryRow(ctx, `
+		SELECT used_bytes, reserved_bytes
+		FROM user_storage
+		WHERE user_id = $1
+	`, userID).Scan(&usedBytes, &reservedBytes)
+	if err != nil {
+		t.Fatalf("read storage usage: %v", err)
+	}
+
+	if usedBytes != 0 {
+		t.Errorf("used_bytes = %d; want 0", usedBytes)
+	}
+
+	if reservedBytes != 0 {
+		t.Errorf("reserved_bytes = %d; want 0", reservedBytes)
+	}
+
+	// Verify reservation status.
+	var status string
+
+	err = pool.QueryRow(ctx, `
+		SELECT status
+		FROM storage_reservations
+		WHERE user_id = $1
+	`, userID).Scan(&status)
+	if err != nil {
+		t.Fatalf("read reservation status: %v", err)
+	}
+
+	if status != "RELEASED" {
+		t.Errorf("reservation status = %s; want RELEASED", status)
+	}
+
+	// No file metadata should have been inserted.
+	var entryCount int
+
+	err = pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM entries
+		WHERE user_id = $1
+		  AND public_id = $2
+		  AND type = 'FILE'
+	`, userID, publicID).Scan(&entryCount)
+	if err != nil {
+		t.Fatalf("check file metadata: %v", err)
+	}
+
+	if entryCount != 0 {
+		t.Errorf("found %d file entries; want 0", entryCount)
+	}
+
+	t.Logf(
+		"PASS: renewal failure cancelled upload; status=%s, used=%d, reserved=%d, entries=%d",
+		status,
+		usedBytes,
+		reservedBytes,
+		entryCount,
+	)
+}
+
+func TestAbandonedUploadReservationRecoveredAfterCrash(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if os.Getenv("DATABASE_URL") == "" {
+		_ = godotenv.Load("../.env")
+	}
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("DATABASE_URL is not set")
+	}
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping PostgreSQL: %v", err)
+	}
+
+	userID := time.Now().UnixNano()
+
+	previousDB := db.DB
+	db.DB = pool
+	defer func() {
+		db.DB = previousDB
+	}()
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
+		defer cleanupCancel()
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`,
+			userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM user_storage WHERE user_id = $1`,
+			userID,
+		)
+	})
+
+	const (
+		fileSize = int64(1024)
+		quota    = int64(1 << 30)
+	)
+
+	// 1. Create user storage record.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO user_storage
+			(user_id, quota_bytes, used_bytes, reserved_bytes)
+		VALUES ($1, $2, 0, 0)
+	`, userID, quota)
+	if err != nil {
+		t.Fatalf("create storage record: %v", err)
+	}
+
+	// 2. Create reservation, just like an upload would.
+	reservationID, err := db.CreateStorageReservation(
+		ctx,
+		userID,
+		fileSize,
+	)
+	if err != nil {
+		t.Fatalf("create storage reservation: %v", err)
+	}
+
+	// Verify quota was reserved.
+	var usedBytes, reservedBytes int64
+
+	err = pool.QueryRow(ctx, `
+		SELECT used_bytes, reserved_bytes
+		FROM user_storage
+		WHERE user_id = $1
+	`, userID).Scan(&usedBytes, &reservedBytes)
+	if err != nil {
+		t.Fatalf("read initial storage usage: %v", err)
+	}
+
+	if usedBytes != 0 || reservedBytes != fileSize {
+		t.Fatalf(
+			"unexpected initial quota: used=%d reserved=%d",
+			usedBytes,
+			reservedBytes,
+		)
+	}
+
+	// 3. Simulate application crash:
+	// No heartbeat is running, and the reservation is abandoned.
+	// Force its lease to expire.
+	_, err = pool.Exec(ctx, `
+		UPDATE storage_reservations
+		SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second',
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+		  AND status = 'PENDING'
+	`, reservationID)
+	if err != nil {
+		t.Fatalf("expire abandoned reservation: %v", err)
+	}
+
+	// 4. Run the real recovery function.
+	recovered, err := db.RecoverExpiredStorageReservations(ctx, 100)
+	if err != nil {
+		t.Fatalf("recover abandoned reservation: %v", err)
+	}
+
+	if recovered != 1 {
+		t.Fatalf("recovered %d reservations; want 1", recovered)
+	}
+
+	// 5. Verify reservation status.
+	var status string
+
+	err = pool.QueryRow(ctx, `
+		SELECT status
+		FROM storage_reservations
+		WHERE id = $1
+	`, reservationID).Scan(&status)
+	if err != nil {
+		t.Fatalf("read reservation status: %v", err)
+	}
+
+	if status != "RELEASED" {
+		t.Fatalf("reservation status = %s; want RELEASED", status)
+	}
+
+	// 6. Verify quota was released.
+	err = pool.QueryRow(ctx, `
+		SELECT used_bytes, reserved_bytes
+		FROM user_storage
+		WHERE user_id = $1
+	`, userID).Scan(&usedBytes, &reservedBytes)
+	if err != nil {
+		t.Fatalf("read final storage usage: %v", err)
+	}
+
+	if usedBytes != 0 {
+		t.Errorf("used_bytes = %d; want 0", usedBytes)
+	}
+
+	if reservedBytes != 0 {
+		t.Errorf("reserved_bytes = %d; want 0", reservedBytes)
+	}
+
+	t.Logf(
+		"PASS: abandoned upload recovered; reservation=%d, status=%s, used=%d, reserved=%d",
+		reservationID,
+		status,
+		usedBytes,
+		reservedBytes,
+	)
+}
+
+func TestConcurrentRecoveryWorkers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if os.Getenv("DATABASE_URL") == "" {
+		_ = godotenv.Load("../.env")
+	}
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("DATABASE_URL is not set")
+	}
+
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping PostgreSQL: %v", err)
+	}
+
+	userID := time.Now().UnixNano()
+
+	previousDB := db.DB
+	db.DB = pool
+	defer func() {
+		db.DB = previousDB
+	}()
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
+		defer cleanupCancel()
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM storage_reservations WHERE user_id = $1`,
+			userID,
+		)
+
+		_, _ = pool.Exec(cleanupCtx,
+			`DELETE FROM user_storage WHERE user_id = $1`,
+			userID,
+		)
+	})
+
+	const (
+		reservationCount = 20
+		batchSize        = 5
+	)
+
+	// 1. Create storage record.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO user_storage
+			(user_id, quota_bytes, used_bytes, reserved_bytes)
+		VALUES ($1, $2, 0, 0)
+	`, userID, int64(1<<30))
+	if err != nil {
+		t.Fatalf("create storage record: %v", err)
+	}
+
+	// 2. Create 20 individual reservations.
+	var totalReserved int64
+
+	for i := 1; i <= reservationCount; i++ {
+		size := int64(i * 100)
+
+		_, err := db.CreateStorageReservation(ctx, userID, size)
+		if err != nil {
+			t.Fatalf("create reservation %d: %v", i, err)
+		}
+
+		totalReserved += size
+	}
+
+	// 3. Expire all pending reservations.
+	_, err = pool.Exec(ctx, `
+		UPDATE storage_reservations
+		SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second',
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE user_id = $1
+		  AND status = 'PENDING'
+	`, userID)
+	if err != nil {
+		t.Fatalf("expire reservations: %v", err)
+	}
+
+	// Confirm initial reserved quota.
+	var reservedBefore int64
+
+	err = pool.QueryRow(ctx, `
+		SELECT reserved_bytes
+		FROM user_storage
+		WHERE user_id = $1
+	`, userID).Scan(&reservedBefore)
+	if err != nil {
+		t.Fatalf("read initial reserved quota: %v", err)
+	}
+
+	if reservedBefore != totalReserved {
+		t.Fatalf(
+			"initial reserved_bytes = %d; want %d",
+			reservedBefore,
+			totalReserved,
+		)
+	}
+
+	// 4. Simulate two independent recovery workers.
+	type workerResult struct {
+		workerID  int
+		recovered int
+		err       error
+	}
+
+	results := make(chan workerResult, 2)
+	start := make(chan struct{})
+
+	runWorker := func(workerID int) {
+		// Both workers start together.
+		<-start
+
+		totalRecovered := 0
+
+		for {
+			recovered, err := db.RecoverExpiredStorageReservations(
+				ctx,
+				batchSize,
+			)
+			if err != nil {
+				results <- workerResult{
+					workerID: workerID,
+					err:      err,
+				}
+				return
+			}
+
+			totalRecovered += recovered
+
+			// Continue processing while a full batch was recovered.
+			if recovered < batchSize {
+				break
+			}
+		}
+
+		results <- workerResult{
+			workerID:  workerID,
+			recovered: totalRecovered,
+		}
+	}
+
+	go runWorker(1)
+	go runWorker(2)
+
+	// Release both workers simultaneously.
+	close(start)
+
+	totalRecovered := 0
+
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				t.Fatalf(
+					"worker %d failed: %v",
+					result.workerID,
+					result.err,
+				)
+			}
+
+			totalRecovered += result.recovered
+
+			t.Logf(
+				"Worker %d recovered %d reservations",
+				result.workerID,
+				result.recovered,
+			)
+
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for recovery workers")
+		}
+	}
+
+	// 5. Verify total recovery count.
+	if totalRecovered != reservationCount {
+		t.Fatalf(
+			"total recovered = %d; want %d",
+			totalRecovered,
+			reservationCount,
+		)
+	}
+
+	// 6. Verify all reservations have been released exactly once.
+	var pendingCount, releasedCount, finalizedCount int
+
+	err = pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'PENDING'),
+			COUNT(*) FILTER (WHERE status = 'RELEASED'),
+			COUNT(*) FILTER (WHERE status = 'FINALIZED')
+		FROM storage_reservations
+		WHERE user_id = $1
+	`, userID).Scan(
+		&pendingCount,
+		&releasedCount,
+		&finalizedCount,
+	)
+	if err != nil {
+		t.Fatalf("read reservation statuses: %v", err)
+	}
+
+	if pendingCount != 0 {
+		t.Errorf("pending reservations = %d; want 0", pendingCount)
+	}
+
+	if releasedCount != reservationCount {
+		t.Errorf(
+			"released reservations = %d; want %d",
+			releasedCount,
+			reservationCount,
+		)
+	}
+
+	if finalizedCount != 0 {
+		t.Errorf("finalized reservations = %d; want 0", finalizedCount)
+	}
+
+	// 7. Verify final quota accounting.
+	var usedBytes, reservedBytes int64
+
+	err = pool.QueryRow(ctx, `
+		SELECT used_bytes, reserved_bytes
+		FROM user_storage
+		WHERE user_id = $1
+	`, userID).Scan(&usedBytes, &reservedBytes)
+	if err != nil {
+		t.Fatalf("read final storage usage: %v", err)
+	}
+
+	if usedBytes != 0 {
+		t.Errorf("used_bytes = %d; want 0", usedBytes)
+	}
+
+	if reservedBytes != 0 {
+		t.Errorf("reserved_bytes = %d; want 0", reservedBytes)
+	}
+
+	t.Logf(
+		"PASS: two workers recovered %d reservations; released=%d, used=%d, reserved=%d",
+		totalRecovered,
+		releasedCount,
+		usedBytes,
+		reservedBytes,
+	)
+}

@@ -13,16 +13,32 @@ const (
 	recoveryInterval  = time.Minute
 )
 
-// Run starts the storage reservation recovery worker.
-// It performs an immediate recovery pass and then runs every minute.
+type recoveryFunc func(ctx context.Context, batchSize int) (int, error)
+
+// Run starts the production storage reservation recovery worker.
 func Run(ctx context.Context) {
-	ticker := time.NewTicker(recoveryInterval)
+	runWith(
+		ctx,
+		recoveryInterval,
+		recoveryBatchSize,
+		db.RecoverExpiredStorageReservations,
+	)
+}
+
+// runWith contains the worker lifecycle and allows test configuration.
+func runWith(
+	ctx context.Context,
+	interval time.Duration,
+	batchSize int,
+	recover recoveryFunc,
+) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	log.Println("Storage reservation recovery worker started")
 
-	// Run once immediately on startup.
-	runRecoveryPass(ctx)
+	// Perform recovery immediately on startup.
+	runRecoveryPass(ctx, batchSize, recover)
 
 	for {
 		select {
@@ -31,23 +47,23 @@ func Run(ctx context.Context) {
 			return
 
 		case <-ticker.C:
-			runRecoveryPass(ctx)
+			runRecoveryPass(ctx, batchSize, recover)
 		}
 	}
 }
 
 // runRecoveryPass processes expired reservations in batches.
-func runRecoveryPass(ctx context.Context) {
+func runRecoveryPass(
+	ctx context.Context,
+	batchSize int,
+	recover recoveryFunc,
+) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		recovered, err := db.RecoverExpiredStorageReservations(
-			ctx,
-			recoveryBatchSize,
-		)
-
+		recovered, err := recover(ctx, batchSize)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("Storage reservation recovery failed: %v", err)
@@ -62,7 +78,8 @@ func runRecoveryPass(ctx context.Context) {
 			)
 		}
 
-		if recovered < recoveryBatchSize {
+		// Continue while a complete batch was recovered.
+		if recovered < batchSize {
 			return
 		}
 	}
