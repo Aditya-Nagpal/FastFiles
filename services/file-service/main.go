@@ -15,6 +15,7 @@ import (
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/db"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/outbox"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/routes"
+	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/services/s3_cleanup"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/services/storage_recovery"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/services/tasks"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/utils"
@@ -66,6 +67,14 @@ func main() {
 		log.Fatalf("Failed to initialize S3 uploader: %v", err)
 	}
 
+	// Start S3 cleanup worker.
+	s3CleanupDone := make(chan struct{})
+
+	go func() {
+		defer close(s3CleanupDone)
+		s3_cleanup.Run(ctx, s3Uploader)
+	}()
+
 	// Initialize task service.
 	taskService := tasks.NewTaskService("localhost" + config.AppConfig.RedisPort)
 
@@ -93,23 +102,40 @@ func main() {
 	<-ctx.Done()
 	log.Println("Shutting down file service...")
 
-	shutdownCtx, cancel := context.WithTimeout(
+	// Stop accepting new requests and wait for active requests.
+	httpShutdownCtx, httpCancel := context.WithTimeout(
 		context.Background(),
 		10*time.Second,
 	)
-	defer cancel()
 
-	// Stop accepting new requests and wait for active requests.
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := server.Shutdown(httpShutdownCtx); err != nil {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
-	// Wait for recovery worker to stop.
+	httpCancel()
+
+	// Give background workers time to finish their current operations.
+	workerShutdownCtx, workerCancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	defer workerCancel()
+
+	// Wait for recovery worker.
 	select {
 	case <-recoveryDone:
 		log.Println("Storage recovery worker shut down successfully")
 
-	case <-shutdownCtx.Done():
+	case <-workerShutdownCtx.Done():
 		log.Println("Timed out waiting for storage recovery worker")
+	}
+
+	// Wait for S3 cleanup worker.
+	select {
+	case <-s3CleanupDone:
+		log.Println("S3 cleanup worker shut down successfully")
+
+	case <-workerShutdownCtx.Done():
+		log.Println("Timed out waiting for S3 cleanup worker")
 	}
 }

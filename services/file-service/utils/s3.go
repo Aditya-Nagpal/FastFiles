@@ -89,6 +89,43 @@ func (u *S3Uploader) UploadFile(ctx context.Context, file multipart.File, fileHe
 	return err
 }
 
+// DeleteObjectWithContext deletes a single S3 object using the supplied
+// bucket and context. Used by the background cleanup worker.
+func (u *S3Uploader) DeleteObjectWithContext(
+	ctx context.Context,
+	bucketName string,
+	key string,
+) error {
+	if bucketName == "" {
+		return fmt.Errorf("S3 bucket name cannot be empty")
+	}
+
+	if key == "" {
+		return fmt.Errorf("S3 object key cannot be empty")
+	}
+
+	client := u.DeleteObjectClient
+	if client == nil {
+		client = u.Client
+	}
+
+	if client == nil {
+		return fmt.Errorf("S3 client is not initialized")
+	}
+
+	_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(key),
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to delete S3 object %q: %w", key, err)
+	}
+
+	return nil
+}
+
+// DeleteObject preserves the existing API for current callers.
 func (u *S3Uploader) DeleteObject(prefix string, isFolder bool) error {
 	if isFolder {
 		if u.Client == nil {
@@ -100,7 +137,7 @@ func (u *S3Uploader) DeleteObject(prefix string, isFolder bool) error {
 			Prefix: aws.String(prefix),
 		}
 
-		output, err := u.Client.ListObjectsV2(context.TODO(), listInput)
+		output, err := u.Client.ListObjectsV2(context.Background(), listInput)
 		if err != nil {
 			return err
 		}
@@ -114,26 +151,18 @@ func (u *S3Uploader) DeleteObject(prefix string, isFolder bool) error {
 			return fmt.Errorf("no objects found in the folder")
 		}
 
-		_, err = u.Client.DeleteObjects(context.TODO(), &s3.DeleteObjectsInput{
+		_, err = u.Client.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
 			Bucket: aws.String(u.BucketName),
 			Delete: &types.Delete{Objects: objects},
 		})
 		return err
 	}
 
-	client := u.DeleteObjectClient
-	if client == nil {
-		client = u.Client
-	}
-	if client == nil {
-		return fmt.Errorf("S3 client is not initialized")
-	}
-
-	_, err := client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
-		Bucket: aws.String(u.BucketName),
-		Key:    aws.String(prefix),
-	})
-	return err
+	return u.DeleteObjectWithContext(
+		context.Background(),
+		u.BucketName,
+		prefix,
+	)
 }
 
 func (u *S3Uploader) GetS3URL(key string) string {
