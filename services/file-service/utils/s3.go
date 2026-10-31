@@ -70,12 +70,7 @@ func NewS3Uploader() (*S3Uploader, error) {
 	}, nil
 }
 
-func (u *S3Uploader) UploadFile(
-	ctx context.Context,
-	file multipart.File,
-	fileHeader *multipart.FileHeader,
-	key string,
-) error {
+func (u *S3Uploader) UploadFile(ctx context.Context, file multipart.File, fileHeader *multipart.FileHeader, key string) error {
 	client := u.PutObjectClient
 	if client == nil {
 		client = u.Client

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -703,11 +704,24 @@ func TestUploadFile_LongRunningUploadKeepsReservationAlive(t *testing.T) {
 		BucketName:      "test-bucket",
 	}
 
-	uploadDone := make(chan error, 1)
+	uploadDone := make(chan struct{})
+
+	var (
+		uploadErr  error
+		finishOnce sync.Once
+	)
+
+	finishUpload := func() {
+		finishOnce.Do(func() {
+			close(fakeS3.finish)
+		})
+	}
 
 	// Use short test-only lease and heartbeat intervals.
 	go func() {
-		uploadDone <- uploadFileWithHeartbeat(
+		defer close(uploadDone)
+
+		uploadErr = uploadFileWithHeartbeat(
 			c,
 			uploader,
 			nil,
@@ -720,9 +734,24 @@ func TestUploadFile_LongRunningUploadKeepsReservationAlive(t *testing.T) {
 		)
 	}()
 
+	// Always stop and wait for the upload goroutine before
+	// restoring DB or closing the PostgreSQL pool.
+	defer func() {
+		finishUpload()
+
+		select {
+		case <-uploadDone:
+		case <-time.After(3 * time.Second):
+			t.Error("upload goroutine did not terminate")
+		}
+	}()
+
 	// Wait until S3 upload starts.
+	// Do NOT finish the upload yet.
 	select {
 	case <-fakeS3.started:
+		// Upload is blocked inside fake S3.
+
 	case <-ctx.Done():
 		t.Fatal("S3 upload did not start")
 	}
@@ -780,13 +809,12 @@ func TestUploadFile_LongRunningUploadKeepsReservationAlive(t *testing.T) {
 		t.Fatalf("reservation status = %s; want PENDING", status)
 	}
 
-	// Allow S3 upload to finish.
-	close(fakeS3.finish)
+	finishUpload()
 
 	select {
-	case err := <-uploadDone:
-		if err != nil {
-			t.Fatalf("upload failed: %v", err)
+	case <-uploadDone:
+		if uploadErr != nil {
+			t.Fatalf("upload failed: %v", uploadErr)
 		}
 
 	case <-ctx.Done():
