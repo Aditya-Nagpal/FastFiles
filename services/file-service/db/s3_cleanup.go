@@ -89,7 +89,7 @@ func ClaimNextS3CleanupTask(ctx context.Context) (*models.S3CleanupTask, error) 
 		SET status = 'PROCESSING',
 			attempts = task.attempts + 1,
 			lease_token = gen_random_uuid(),
-			lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '2 minutes',
+			lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '5 minutes',
 			updated_at = CURRENT_TIMESTAMP
 		FROM candidate
 		WHERE task.id = candidate.id
@@ -141,7 +141,7 @@ func ClaimS3CleanupTaskByID(ctx context.Context, taskID int64) (*models.S3Cleanu
 		SET status = 'PROCESSING',
 			attempts = attempts + 1,
 			lease_token = gen_random_uuid(),
-			lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '2 minutes',
+			lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '5 minutes',
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		  AND status = 'PENDING'
@@ -237,7 +237,7 @@ func MarkS3CleanupFailed(ctx context.Context, taskID int64, leaseToken uuid.UUID
 			END,
 			next_retry_at = CURRENT_TIMESTAMP
 				+ LEAST(
-					POWER(2, LEAST(GREATEST(attempts, 1) - 1, 8)),
+					POWER(2, GREATEST(attempts, 1) - 1),
 					300
 				) * INTERVAL '1 second',
 			last_error = $3,

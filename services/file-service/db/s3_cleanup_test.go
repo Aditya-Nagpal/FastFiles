@@ -806,3 +806,50 @@ func TestClaimS3CleanupTaskWithNullLease(t *testing.T) {
 
 	t.Log("PASS: legacy PROCESSING task with NULL lease successfully reclaimed")
 }
+
+func TestS3CleanupProcessingRequiresLease(t *testing.T) {
+	ctx := setupS3CleanupTest(t)
+	taskID := createTestS3CleanupTask(t, ctx)
+
+	// Claim task to give it a valid PROCESSING lease.
+	task, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task == nil || task.ID != taskID {
+		t.Fatal("failed to claim expected task")
+	}
+
+	// Attempt to remove the lease while keeping PROCESSING status.
+	_, err = DB.Exec(ctx, `
+		UPDATE s3_cleanup_tasks
+		SET lease_token = NULL,
+		    lease_expires_at = NULL
+		WHERE id = $1
+	`, taskID)
+
+	if err == nil {
+		t.Fatal("expected database constraint to reject PROCESSING task without lease")
+	}
+
+	// Verify the original valid lease remains intact after rollback.
+	var tokenPresent bool
+	var expiryPresent bool
+
+	err = DB.QueryRow(ctx, `
+		SELECT lease_token IS NOT NULL,
+		       lease_expires_at IS NOT NULL
+		FROM s3_cleanup_tasks
+		WHERE id = $1
+	`, taskID).Scan(&tokenPresent, &expiryPresent)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !tokenPresent || !expiryPresent {
+		t.Fatal("valid lease should remain unchanged after rejected update")
+	}
+
+	t.Log("PASS: PostgreSQL rejects PROCESSING task without lease")
+}
