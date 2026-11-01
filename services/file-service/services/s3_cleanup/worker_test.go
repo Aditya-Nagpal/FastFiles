@@ -6,8 +6,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
 )
+
+func newTestCleanupTask(id int64) *models.S3CleanupTask {
+	token := uuid.New()
+
+	return &models.S3CleanupTask{
+		ID:             id,
+		BucketName:     "test-bucket",
+		S3Key:          "user/file.txt",
+		Attempts:       1,
+		MaxAttempts:    10,
+		LeaseToken:     &token,
+		LeaseExpiresAt: timePtr(time.Now().Add(2 * time.Minute)),
+	}
+}
+
+func timePtr(t time.Time) *time.Time {
+	return &t
+}
 
 func newTestWorker(
 	t *testing.T,
@@ -20,6 +40,14 @@ func newTestWorker(
 	var failedIDs []int64
 	var deletionErrors []error
 
+	// Every claimed test task must have a lease token.
+	for _, task := range tasks {
+		if task != nil && task.LeaseToken == nil {
+			token := uuid.New()
+			task.LeaseToken = &token
+		}
+	}
+
 	worker := cleanupWorker{
 		claimTask: func(ctx context.Context) (*models.S3CleanupTask, error) {
 			if len(tasks) == 0 {
@@ -31,12 +59,29 @@ func newTestWorker(
 			return task, nil
 		},
 
-		markDone: func(ctx context.Context, id int64) error {
+		markDone: func(
+			ctx context.Context,
+			id int64,
+			token uuid.UUID,
+		) error {
+			if token == uuid.Nil {
+				return errors.New("empty lease token passed to markDone")
+			}
+
 			completedIDs = append(completedIDs, id)
 			return nil
 		},
 
-		markFailed: func(ctx context.Context, id int64, err error) error {
+		markFailed: func(
+			ctx context.Context,
+			id int64,
+			token uuid.UUID,
+			err error,
+		) error {
+			if token == uuid.Nil {
+				return errors.New("empty lease token passed to markFailed")
+			}
+
 			failedIDs = append(failedIDs, id)
 			deletionErrors = append(deletionErrors, err)
 			return nil
@@ -55,13 +100,7 @@ func newTestWorker(
 }
 
 func TestProcessTask_Success(t *testing.T) {
-	task := &models.S3CleanupTask{
-		ID:          1,
-		BucketName:  "test-bucket",
-		S3Key:       "user/file.txt",
-		Attempts:    1,
-		MaxAttempts: 10,
-	}
+	task := newTestCleanupTask(1)
 
 	worker, completed, failed, _ := newTestWorker(
 		t,
@@ -72,7 +111,11 @@ func TestProcessTask_Success(t *testing.T) {
 	processTask(context.Background(), worker, task)
 
 	if len(*completed) != 1 || (*completed)[0] != task.ID {
-		t.Fatalf("expected task %d to be marked completed, got %v", task.ID, *completed)
+		t.Fatalf(
+			"expected task %d to be marked completed, got %v",
+			task.ID,
+			*completed,
+		)
 	}
 
 	if len(*failed) != 0 {
@@ -82,14 +125,7 @@ func TestProcessTask_Success(t *testing.T) {
 
 func TestProcessTask_DeleteFailure(t *testing.T) {
 	expectedErr := errors.New("S3 deletion failed")
-
-	task := &models.S3CleanupTask{
-		ID:          2,
-		BucketName:  "test-bucket",
-		S3Key:       "user/file.txt",
-		Attempts:    1,
-		MaxAttempts: 10,
-	}
+	task := newTestCleanupTask(2)
 
 	worker, completed, failed, deletionErrors := newTestWorker(
 		t,
@@ -104,50 +140,79 @@ func TestProcessTask_DeleteFailure(t *testing.T) {
 	}
 
 	if len(*failed) != 1 || (*failed)[0] != task.ID {
-		t.Fatalf("expected task %d to be marked failed, got %v", task.ID, *failed)
+		t.Fatalf(
+			"expected task %d to be marked failed, got %v",
+			task.ID,
+			*failed,
+		)
 	}
 
-	if len(*deletionErrors) != 1 || !errors.Is((*deletionErrors)[0], expectedErr) {
-		t.Fatalf("expected original deletion error to be recorded")
+	if len(*deletionErrors) != 1 ||
+		!errors.Is((*deletionErrors)[0], expectedErr) {
+		t.Fatal("expected original deletion error to be recorded")
 	}
 }
 
 func TestProcessTask_CompletionUpdateFailure(t *testing.T) {
-	task := &models.S3CleanupTask{
-		ID:          3,
-		BucketName:  "test-bucket",
-		S3Key:       "user/file.txt",
-		Attempts:    1,
-		MaxAttempts: 10,
-	}
+	task := newTestCleanupTask(3)
 
 	expectedErr := errors.New("database update failed")
 
 	worker, _, failed, _ := newTestWorker(t, nil, nil)
 
-	worker.markDone = func(ctx context.Context, id int64) error {
+	worker.markDone = func(
+		ctx context.Context,
+		id int64,
+		token uuid.UUID,
+	) error {
+		if token != *task.LeaseToken {
+			t.Fatal("markDone received incorrect lease token")
+		}
+
 		return expectedErr
 	}
 
 	processTask(context.Background(), worker, task)
 
 	if len(*failed) != 0 {
-		t.Fatalf("task should not be marked as failed when completion update fails")
+		t.Fatal(
+			"task should not be marked failed when completion update fails",
+		)
+	}
+}
+
+func TestProcessTask_MissingLeaseToken(t *testing.T) {
+	task := newTestCleanupTask(4)
+	task.LeaseToken = nil
+
+	worker, completed, failed, _ := newTestWorker(t, nil, nil)
+
+	deleteCalled := false
+
+	worker.deleteS3 = func(
+		ctx context.Context,
+		bucket string,
+		key string,
+	) error {
+		deleteCalled = true
+		return nil
+	}
+
+	processTask(context.Background(), worker, task)
+
+	if deleteCalled {
+		t.Fatal("S3 deletion should not run without a lease token")
+	}
+
+	if len(*completed) != 0 || len(*failed) != 0 {
+		t.Fatal("task should not be updated without a lease token")
 	}
 }
 
 func TestProcessAvailableTasks_MultipleTasks(t *testing.T) {
 	tasks := []*models.S3CleanupTask{
-		{
-			ID:         10,
-			BucketName: "test-bucket",
-			S3Key:      "user/file1.txt",
-		},
-		{
-			ID:         11,
-			BucketName: "test-bucket",
-			S3Key:      "user/file2.txt",
-		},
+		newTestCleanupTask(10),
+		newTestCleanupTask(11),
 	}
 
 	worker, completed, failed, _ := newTestWorker(t, tasks, nil)
@@ -182,7 +247,9 @@ func TestProcessAvailableTasks_ClaimFailure(t *testing.T) {
 
 	worker, _, _, _ := newTestWorker(t, nil, nil)
 
-	worker.claimTask = func(ctx context.Context) (*models.S3CleanupTask, error) {
+	worker.claimTask = func(
+		ctx context.Context,
+	) (*models.S3CleanupTask, error) {
 		return nil, expectedErr
 	}
 
@@ -194,11 +261,7 @@ func TestProcessAvailableTasks_ClaimFailure(t *testing.T) {
 }
 
 func TestProcessTask_DeleteRespectsContext(t *testing.T) {
-	task := &models.S3CleanupTask{
-		ID:         20,
-		BucketName: "test-bucket",
-		S3Key:      "user/file.txt",
-	}
+	task := newTestCleanupTask(20)
 
 	worker, completed, failed, _ := newTestWorker(t, nil, nil)
 

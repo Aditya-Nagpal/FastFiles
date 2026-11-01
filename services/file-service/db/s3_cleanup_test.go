@@ -198,7 +198,7 @@ func TestMarkS3CleanupCompleted(t *testing.T) {
 		t.Fatal("failed to claim expected task")
 	}
 
-	if err := MarkS3CleanupCompleted(ctx, taskID); err != nil {
+	if err := MarkS3CleanupCompleted(ctx, taskID, *task.LeaseToken); err != nil {
 		t.Fatalf("mark completed: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestMarkS3CleanupFailedSchedulesRetry(t *testing.T) {
 
 	cleanupErr := fmt.Errorf("simulated S3 deletion failure")
 
-	if err := MarkS3CleanupFailed(ctx, taskID, cleanupErr); err != nil {
+	if err := MarkS3CleanupFailed(ctx, taskID, *task.LeaseToken, cleanupErr); err != nil {
 		t.Fatalf("mark cleanup failed: %v", err)
 	}
 
@@ -339,6 +339,7 @@ func TestMarkS3CleanupFailedAfterMaxAttempts(t *testing.T) {
 		if err := MarkS3CleanupFailed(
 			ctx,
 			taskID,
+			*task.LeaseToken,
 			fmt.Errorf("simulated failure %d", attempt),
 		); err != nil {
 			t.Fatal(err)
@@ -485,10 +486,16 @@ func TestClaimStaleS3CleanupTask(t *testing.T) {
 		t.Fatalf("initial attempts = %d; want 1", claimedTask.Attempts)
 	}
 
-	// Simulate a worker crash by making updated_at older than 2 minutes.
+	if claimedTask.LeaseToken == nil {
+		t.Fatal("initial claim has no lease token")
+	}
+
+	oldToken := *claimedTask.LeaseToken
+
+	// Simulate a worker crash by expiring its lease.
 	_, err = DB.Exec(ctx, `
 		UPDATE s3_cleanup_tasks
-		SET updated_at = CURRENT_TIMESTAMP - INTERVAL '3 minutes'
+		SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'
 		WHERE id = $1
 	`, taskID)
 
@@ -516,6 +523,22 @@ func TestClaimStaleS3CleanupTask(t *testing.T) {
 
 	if reclaimedTask.Attempts != 2 {
 		t.Errorf("attempts = %d; want 2", reclaimedTask.Attempts)
+	}
+
+	if reclaimedTask.LeaseToken == nil {
+		t.Fatal("reclaimed task has no lease token")
+	}
+
+	if *reclaimedTask.LeaseToken == oldToken {
+		t.Fatal("reclaimed task must receive a new lease token")
+	}
+
+	if reclaimedTask.LeaseExpiresAt == nil {
+		t.Fatal("reclaimed task has no lease expiry")
+	}
+
+	if !reclaimedTask.LeaseExpiresAt.After(time.Now()) {
+		t.Fatal("reclaimed task lease should be in the future")
 	}
 
 	// Verify the persisted database state.
@@ -546,4 +569,240 @@ func TestClaimStaleS3CleanupTask(t *testing.T) {
 		status,
 		attempts,
 	)
+}
+
+func TestOldLeaseTokenCannotCompleteReclaimedTask(t *testing.T) {
+	ctx := setupS3CleanupTest(t)
+	taskID := createTestS3CleanupTask(t, ctx)
+
+	// Worker A claims the task.
+	workerA, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workerA == nil || workerA.ID != taskID || workerA.LeaseToken == nil {
+		t.Fatal("worker A failed to claim expected task")
+	}
+	oldToken := *workerA.LeaseToken
+
+	// Expire worker A's lease.
+	_, err = DB.Exec(ctx, `
+		UPDATE s3_cleanup_tasks
+		SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'
+		WHERE id = $1
+	`, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker B reclaims the task.
+	workerB, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workerB == nil || workerB.ID != taskID || workerB.LeaseToken == nil {
+		t.Fatal("worker B failed to reclaim expected task")
+	}
+
+	newToken := *workerB.LeaseToken
+	if oldToken == newToken {
+		t.Fatal("worker B must receive a new lease token")
+	}
+
+	// Worker A must no longer be allowed to complete the task.
+	err = MarkS3CleanupCompleted(ctx, taskID, oldToken)
+	if err == nil {
+		t.Fatal("expected old worker's completion to be rejected")
+	}
+
+	// Verify worker B still owns the task.
+	var status string
+	var tokenMatches bool
+
+	err = DB.QueryRow(ctx, `
+		SELECT status, lease_token = $2
+		FROM s3_cleanup_tasks
+		WHERE id = $1
+	`, taskID, newToken).Scan(&status, &tokenMatches)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if status != "PROCESSING" {
+		t.Fatalf("status = %s; want PROCESSING", status)
+	}
+	if !tokenMatches {
+		t.Fatal("worker B's lease token was unexpectedly changed")
+	}
+
+	// Worker B should be able to complete it.
+	if err := MarkS3CleanupCompleted(ctx, taskID, newToken); err != nil {
+		t.Fatalf("worker B should be able to complete task: %v", err)
+	}
+
+	err = DB.QueryRow(ctx, `
+		SELECT status FROM s3_cleanup_tasks WHERE id = $1
+	`, taskID).Scan(&status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "COMPLETED" {
+		t.Fatalf("status = %s; want COMPLETED", status)
+	}
+
+	t.Log("PASS: old lease token rejected; new lease token completed task")
+}
+
+func TestOldLeaseTokenCannotFailReclaimedTask(t *testing.T) {
+	ctx := setupS3CleanupTest(t)
+	taskID := createTestS3CleanupTask(t, ctx)
+
+	// Worker A claims the task.
+	workerA, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workerA == nil || workerA.ID != taskID || workerA.LeaseToken == nil {
+		t.Fatal("worker A failed to claim expected task")
+	}
+	oldToken := *workerA.LeaseToken
+
+	// Expire worker A's lease.
+	_, err = DB.Exec(ctx, `
+		UPDATE s3_cleanup_tasks
+		SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'
+		WHERE id = $1
+	`, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker B reclaims the task.
+	workerB, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workerB == nil || workerB.ID != taskID || workerB.LeaseToken == nil {
+		t.Fatal("worker B failed to reclaim expected task")
+	}
+
+	newToken := *workerB.LeaseToken
+	if oldToken == newToken {
+		t.Fatal("worker B must receive a new lease token")
+	}
+
+	// Worker A must no longer be allowed to mark the task failed.
+	err = MarkS3CleanupFailed(
+		ctx,
+		taskID,
+		oldToken,
+		fmt.Errorf("failure from stale worker A"),
+	)
+	if err == nil {
+		t.Fatal("expected old worker's failure update to be rejected")
+	}
+
+	// Verify worker B still owns the task.
+	var status string
+	var tokenMatches bool
+
+	err = DB.QueryRow(ctx, `
+		SELECT status, lease_token = $2
+		FROM s3_cleanup_tasks
+		WHERE id = $1
+	`, taskID, newToken).Scan(&status, &tokenMatches)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if status != "PROCESSING" {
+		t.Fatalf("status = %s; want PROCESSING", status)
+	}
+	if !tokenMatches {
+		t.Fatal("worker B's lease token was unexpectedly changed")
+	}
+
+	// Worker B should be able to mark the task failed.
+	if err := MarkS3CleanupFailed(
+		ctx,
+		taskID,
+		newToken,
+		fmt.Errorf("failure from current worker B"),
+	); err != nil {
+		t.Fatalf("worker B should be able to mark task failed: %v", err)
+	}
+
+	err = DB.QueryRow(ctx, `
+		SELECT status FROM s3_cleanup_tasks WHERE id = $1
+	`, taskID).Scan(&status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "PENDING" {
+		t.Fatalf("status = %s; want PENDING", status)
+	}
+
+	t.Log("PASS: old lease token rejected; new lease token failed task successfully")
+}
+
+func TestClaimS3CleanupTaskWithNullLease(t *testing.T) {
+	ctx := setupS3CleanupTest(t)
+
+	taskID := createTestS3CleanupTask(t, ctx)
+
+	// First claim: simulate an older worker claiming the task.
+	task, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task == nil || task.ID != taskID {
+		t.Fatal("failed to claim expected task")
+	}
+
+	// Simulate a legacy PROCESSING row from before lease columns existed.
+	_, err = DB.Exec(ctx, `
+		UPDATE s3_cleanup_tasks
+		SET lease_token = NULL,
+		    lease_expires_at = NULL
+		WHERE id = $1
+	`, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The NULL lease should be treated as expired and reclaimed.
+	reclaimed, err := ClaimNextS3CleanupTask(ctx)
+	if err != nil {
+		t.Fatalf("claim task with NULL lease: %v", err)
+	}
+
+	if reclaimed == nil {
+		t.Fatal("expected task with NULL lease to be reclaimed")
+	}
+
+	if reclaimed.ID != taskID {
+		t.Fatalf("reclaimed ID = %d; want %d", reclaimed.ID, taskID)
+	}
+
+	if reclaimed.Status != "PROCESSING" {
+		t.Fatalf("status = %s; want PROCESSING", reclaimed.Status)
+	}
+
+	if reclaimed.Attempts != 2 {
+		t.Fatalf("attempts = %d; want 2", reclaimed.Attempts)
+	}
+
+	if reclaimed.LeaseToken == nil {
+		t.Fatal("reclaimed task should have a fresh lease token")
+	}
+
+	if reclaimed.LeaseExpiresAt == nil {
+		t.Fatal("reclaimed task should have a lease expiry")
+	}
+
+	if !reclaimed.LeaseExpiresAt.After(time.Now()) {
+		t.Fatal("reclaimed lease expiry should be in the future")
+	}
+
+	t.Log("PASS: legacy PROCESSING task with NULL lease successfully reclaimed")
 }

@@ -6,6 +6,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/db"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/utils"
@@ -26,8 +28,8 @@ type cleanupDeleteFunc func(
 
 type cleanupWorker struct {
 	claimTask  func(context.Context) (*models.S3CleanupTask, error)
-	markDone   func(context.Context, int64) error
-	markFailed func(context.Context, int64, error) error
+	markDone   func(context.Context, int64, uuid.UUID) error
+	markFailed func(context.Context, int64, uuid.UUID, error) error
 	deleteS3   cleanupDeleteFunc
 }
 
@@ -47,11 +49,7 @@ func Run(ctx context.Context, uploader *utils.S3Uploader) {
 	runWith(ctx, cleanupPollInterval, worker)
 }
 
-func runWith(
-	ctx context.Context,
-	pollInterval time.Duration,
-	worker cleanupWorker,
-) {
+func runWith(ctx context.Context, pollInterval time.Duration, worker cleanupWorker) {
 	if pollInterval <= 0 {
 		log.Println("S3 cleanup worker: invalid polling interval")
 		return
@@ -91,10 +89,7 @@ func runWith(
 }
 
 // Returns true if at least one task was claimed.
-func processAvailableTasks(
-	ctx context.Context,
-	worker cleanupWorker,
-) bool {
+func processAvailableTasks(ctx context.Context, worker cleanupWorker) bool {
 	processed := false
 
 	for ctx.Err() == nil {
@@ -122,19 +117,18 @@ func processAvailableTasks(
 	return processed
 }
 
-func processTask(
-	ctx context.Context,
-	worker cleanupWorker,
-	task *models.S3CleanupTask,
-) {
-	log.Printf(
-		"S3 cleanup worker: processing task_id=%d bucket=%s key=%s attempt=%d/%d",
-		task.ID,
-		task.BucketName,
-		task.S3Key,
-		task.Attempts,
-		task.MaxAttempts,
-	)
+func processTask(ctx context.Context, worker cleanupWorker, task *models.S3CleanupTask) {
+	log.Printf("S3 cleanup worker: processing task_id=%d attempt=%d/%d", task.ID, task.Attempts, task.MaxAttempts)
+
+	if task.LeaseToken == nil {
+		log.Printf(
+			"S3 cleanup worker: task %d has no lease token",
+			task.ID,
+		)
+		return
+	}
+
+	leaseToken := *task.LeaseToken
 
 	// Bound the duration of an individual S3 delete request.
 	deleteCtx, cancelDelete := context.WithTimeout(ctx, cleanupTimeout)
@@ -142,7 +136,7 @@ func processTask(
 	cancelDelete()
 
 	if deleteErr != nil {
-		handleTaskFailure(ctx, worker, task.ID, deleteErr)
+		handleTaskFailure(ctx, worker, task.ID, leaseToken, deleteErr)
 		return
 	}
 
@@ -154,29 +148,16 @@ func processTask(
 	)
 	defer cancelDone()
 
-	if err := worker.markDone(doneCtx, task.ID); err != nil {
-		log.Printf(
-			"S3 cleanup worker: object deleted but failed to mark task %d completed: %v",
-			task.ID,
-			err,
-		)
+	if err := worker.markDone(doneCtx, task.ID, leaseToken); err != nil {
+		log.Printf("S3 cleanup worker: object deleted but failed to mark task %d completed: %v", task.ID, err)
 		return
 	}
 
 	log.Printf("S3 cleanup worker: task %d completed", task.ID)
 }
 
-func handleTaskFailure(
-	ctx context.Context,
-	worker cleanupWorker,
-	taskID int64,
-	deleteErr error,
-) {
-	log.Printf(
-		"S3 cleanup worker: deletion failed for task %d: %v",
-		taskID,
-		deleteErr,
-	)
+func handleTaskFailure(ctx context.Context, worker cleanupWorker, taskID int64, leaseToken uuid.UUID, deleteErr error) {
+	log.Printf("S3 cleanup worker: deletion failed for task %d: %v", taskID, deleteErr)
 
 	// Don't attempt another DB operation using a cancelled worker context.
 	updateCtx, cancel := context.WithTimeout(
@@ -185,7 +166,7 @@ func handleTaskFailure(
 	)
 	defer cancel()
 
-	if err := worker.markFailed(updateCtx, taskID, deleteErr); err != nil {
+	if err := worker.markFailed(updateCtx, taskID, leaseToken, deleteErr); err != nil {
 		log.Printf(
 			"S3 cleanup worker: failed to record failure for task %d: %v",
 			taskID,
