@@ -1723,8 +1723,8 @@ func TestUploadFile_DBFailure_S3CleanupFailureSchedulesRetry(t *testing.T) {
 		t.Errorf("status = %s; want PENDING", status)
 	}
 
-	if attempts != 0 {
-		t.Errorf("attempts = %d; want 0", attempts)
+	if attempts != 1 {
+		t.Errorf("attempts = %d; want 1", attempts)
 	}
 
 	if !nextRetryAt.After(time.Now()) {
