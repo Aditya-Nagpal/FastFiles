@@ -853,3 +853,87 @@ func TestS3CleanupProcessingRequiresLease(t *testing.T) {
 
 	t.Log("PASS: PostgreSQL rejects PROCESSING task without lease")
 }
+
+func TestConcurrentClaimS3CleanupTaskByID(t *testing.T) {
+	ctx := setupS3CleanupTest(t)
+	taskID := createTestS3CleanupTask(t, ctx)
+
+	const claimantCount = 2
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	var successfulClaims int
+	var firstErr error
+
+	wg.Add(claimantCount)
+
+	for i := 0; i < claimantCount; i++ {
+		go func() {
+			defer wg.Done()
+
+			task, err := ClaimS3CleanupTaskByID(ctx, taskID)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
+
+			if task != nil {
+				successfulClaims++
+
+				if task.ID != taskID {
+					firstErr = fmt.Errorf(
+						"claimed unexpected task ID: %d",
+						task.ID,
+					)
+				}
+
+				if task.LeaseToken == nil {
+					firstErr = fmt.Errorf("claimed task has no lease token")
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if firstErr != nil {
+		t.Fatalf("concurrent claim failed: %v", firstErr)
+	}
+
+	if successfulClaims != 1 {
+		t.Fatalf(
+			"successful claims = %d; want exactly 1",
+			successfulClaims,
+		)
+	}
+
+	var attempts int
+	var status string
+
+	err := DB.QueryRow(ctx, `
+		SELECT attempts, status
+		FROM s3_cleanup_tasks
+		WHERE id = $1
+	`, taskID).Scan(&attempts, &status)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if attempts != 1 {
+		t.Fatalf("attempts = %d; want 1", attempts)
+	}
+
+	if status != "PROCESSING" {
+		t.Fatalf("status = %s; want PROCESSING", status)
+	}
+
+	t.Log("PASS: task claimed exactly once by concurrent claimants")
+}
