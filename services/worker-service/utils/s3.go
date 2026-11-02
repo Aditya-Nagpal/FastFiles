@@ -14,6 +14,14 @@ import (
 	ConfigEnv "github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/worker-service/config"
 )
 
+type S3DeleteClient interface {
+	DeleteObject(
+		ctx context.Context,
+		params *s3.DeleteObjectInput,
+		optFns ...func(*s3.Options),
+	) (*s3.DeleteObjectOutput, error)
+}
+
 type S3Uploader struct {
 	Client     *s3.Client
 	BucketName string
@@ -49,10 +57,7 @@ func NewS3Uploader() error {
 	return nil
 }
 
-func FetchRawBytesFromS3(
-	ctx context.Context,
-	key string,
-) ([]byte, error) {
+func FetchRawBytesFromS3(ctx context.Context, key string) ([]byte, error) {
 	if s3Uploader == nil {
 		return nil, fmt.Errorf("S3 uploader is not initialized")
 	}
@@ -79,8 +84,33 @@ func DeleteS3Object(ctx context.Context, key string) error {
 		return fmt.Errorf("S3 uploader is not initialized")
 	}
 
-	_, err := s3Uploader.Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: &s3Uploader.BucketName,
+	return DeleteS3ObjectWithClient(ctx, s3Uploader.Client, s3Uploader.BucketName, key)
+}
+
+func DeleteS3ObjectWithClient(ctx context.Context, client S3DeleteClient, bucketName string, key string) error {
+	if client == nil {
+		return fmt.Errorf("S3 client is not initialized")
+	}
+
+	_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &bucketName,
+		Key:    &key,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to delete S3 object %q: %w", key, err)
+	}
+
+	return nil
+}
+
+func (u *S3Uploader) DeleteObject(ctx context.Context, key string) error {
+	if u == nil || u.Client == nil {
+		return fmt.Errorf("S3 client is not initialized")
+	}
+
+	_, err := u.Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &u.BucketName,
 		Key:    &key,
 	})
 	if err != nil {

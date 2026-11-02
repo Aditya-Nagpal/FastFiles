@@ -23,7 +23,14 @@ func (e *PermanentError) Unwrap() error {
 }
 
 func HandleS3CleanupEvent(ctx context.Context, message []byte) error {
+	return handleS3CleanupEvent(ctx, message, utils.DeleteS3Object)
+}
+
+type deleteS3ObjectFunc func(context.Context, string) error
+
+func handleS3CleanupEvent(ctx context.Context, message []byte, deleteObject deleteS3ObjectFunc) error {
 	var event events.EntryEvent
+
 	if err := json.Unmarshal(message, &event); err != nil {
 		return &PermanentError{
 			Err: fmt.Errorf("invalid entry event JSON: %w", err),
@@ -58,15 +65,15 @@ func HandleS3CleanupEvent(ctx context.Context, message []byte) error {
 		if err != nil {
 			return fmt.Errorf("failed to fetch descendant file S3 keys: %w", err)
 		}
+
 		keys = append(keys, descendantKeys...)
 
 	default:
-		// This consumer only handles deletion events.
 		return nil
 	}
 
 	for _, key := range keys {
-		if err := utils.DeleteS3Object(ctx, key); err != nil {
+		if err := deleteObject(ctx, key); err != nil {
 			return fmt.Errorf("S3 cleanup failed for entry %d: %w", event.EntryID, err)
 		}
 	}
