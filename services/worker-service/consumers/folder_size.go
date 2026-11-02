@@ -189,11 +189,7 @@ func PublishToFolderSizeDLQ(
 	return nil
 }
 
-func commitWithRetry(
-	ctx context.Context,
-	reader *kafka.Reader,
-	message kafka.Message,
-) error {
+func commitWithRetry(ctx context.Context, reader *kafka.Reader, message kafka.Message) error {
 	for {
 		err := reader.CommitMessages(ctx, message)
 		if err == nil {

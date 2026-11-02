@@ -20,15 +20,15 @@ const (
 	maxCleanupBackoff = 5 * time.Minute
 )
 
-func RunS3CleanupConsumer(
-	ctx context.Context,
-	brokers []string,
-	topic string,
-) error {
+func RunS3CleanupConsumer(ctx context.Context, brokers []string, topic string) error {
+	return runS3CleanupConsumer(ctx, brokers, topic, "s3-cleanup-worker")
+}
+
+func runS3CleanupConsumer(ctx context.Context, brokers []string, topic, groupID string) error {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  brokers,
 		Topic:    topic,
-		GroupID:  "s3-cleanup-worker",
+		GroupID:  groupID,
 		MinBytes: 1,
 		MaxBytes: 10e6,
 	})

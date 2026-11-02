@@ -455,6 +455,10 @@ func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 		CreatedAt:   time.Now().UTC(),
 	})
 
+	if err != nil {
+		return fmt.Errorf("failed to marshal file deletion event: %w", err)
+	}
+
 	if err := InsertOutboxEvent(tx, ctx, eventID, payload, "ENTRY", publicId, events.EventFileDeleted); err != nil {
 		return err
 	}
