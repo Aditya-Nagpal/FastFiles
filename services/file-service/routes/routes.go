@@ -14,4 +14,5 @@ func SetupRoutes(r *gin.Engine, s3Uploader *utils.S3Uploader, taskService *tasks
 	r.DELETE("/delete/:id", handlers.DeleteContent(s3Uploader))
 	r.GET("/download/:id", handlers.DownloadFile(s3Uploader))
 	r.POST("/search", handlers.HandleSearch())
+	r.GET("/storage/quota", handlers.GetStorageQuota())
 }

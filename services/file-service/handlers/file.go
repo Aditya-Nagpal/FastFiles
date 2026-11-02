@@ -255,14 +255,14 @@ type DeleteRequest struct {
 
 func DeleteContent(uploader *utils.S3Uploader) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		publicID := c.Param("id")
-		if publicID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid public ID"})
+		userId, err := httputils.GetUserIdHeader(c)
+		if httputils.HandleUserIdHeaderError(c, err) {
 			return
 		}
 
-		userId, err := httputils.GetUserIdHeader(c)
-		if httputils.HandleUserIdHeaderError(c, err) {
+		publicID := c.Param("id")
+		if publicID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid public ID"})
 			return
 		}
 
@@ -313,14 +313,14 @@ func DeleteContent(uploader *utils.S3Uploader) gin.HandlerFunc {
 
 func DownloadFile(uploader *utils.S3Uploader) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		publicID := c.Param("id")
-		if publicID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid public ID"})
+		userId, err := httputils.GetUserIdHeader(c)
+		if httputils.HandleUserIdHeaderError(c, err) {
 			return
 		}
 
-		userId, err := httputils.GetUserIdHeader(c)
-		if httputils.HandleUserIdHeaderError(c, err) {
+		publicID := c.Param("id")
+		if publicID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid public ID"})
 			return
 		}
 

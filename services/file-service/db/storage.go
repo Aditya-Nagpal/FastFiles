@@ -10,8 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ErrInsufficientStorage means the user has no available quota,
-// or their storage record has not been initialized.
 var ErrInsufficientStorage = errors.New("insufficient storage quota")
 
 func ReserveStorage(ctx context.Context, userID int64, sizeBytes int64) error {
@@ -526,4 +524,30 @@ func ReleaseQuota(tx pgx.Tx, ctx context.Context, userID int64, sizeBytes int64)
 		return 0, fmt.Errorf("failed to release quota: %w", err)
 	}
 	return updatedUserID, nil
+}
+
+func GetStorageQuota(ctx context.Context, userID int64) (*models.StorageQuota, error) {
+	query := `
+        SELECT quota_bytes, used_bytes, reserved_bytes
+        FROM user_storage
+        WHERE user_id = $1
+    `
+
+	var quota models.StorageQuota
+
+	err := DB.QueryRow(ctx, query, userID).Scan(
+		&quota.QuotaBytes,
+		&quota.UsedBytes,
+		&quota.ReservedBytes,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("storage record not found for user %d", userID)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch storage quota: %w", err)
+	}
+
+	return &quota, nil
 }
