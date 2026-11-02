@@ -542,7 +542,7 @@ func GetStorageQuota(ctx context.Context, userID int64) (*models.StorageQuota, e
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("storage record not found for user %d", userID)
+		return nil, nil
 	}
 
 	if err != nil {

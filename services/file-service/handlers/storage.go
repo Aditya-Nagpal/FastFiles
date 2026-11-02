@@ -17,10 +17,12 @@ func GetStorageQuota() gin.HandlerFunc {
 		}
 
 		quota, err := db.GetStorageQuota(c.Request.Context(), userID)
+		if quota == nil && err == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Storage record not found"})
+			return
+		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to fetch storage quota",
-			})
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch storage quota", "error": err.Error()})
 			return
 		}
 
