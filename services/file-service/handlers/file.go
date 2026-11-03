@@ -349,7 +349,7 @@ func DownloadFile(uploader *utils.S3Uploader) gin.HandlerFunc {
 	}
 }
 
-type SearchRequest struct {
+type SmartSearchRequest struct {
 	Query string `json:"query" binding:"required"`
 	Limit int    `json:"limit"`
 }
@@ -361,7 +361,7 @@ func HandleSearch() gin.HandlerFunc {
 			return
 		}
 
-		var req SearchRequest
+		var req SmartSearchRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "invalid request", "error": err.Error()})
 			return

@@ -1,9 +1,33 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
+import { useFilesStore } from '../stores/files';
+import type { FileItem } from '../stores/files';
+import { isAxiosError } from 'axios';
 
 type Theme = 'light' | 'dark';
 
 const theme = ref<Theme>('light');
+const files = useFilesStore();
+
+const isFolderModalOpen = ref(false);
+const newFolderName = ref('');
+const isCreatingFolder = ref(false);
+const folderError = ref('');
+
+const fileInput = ref<HTMLInputElement | null>(null);
+const isUploadModalOpen = ref(false);
+const isDraggingFile = ref(false);
+const selectedFile = ref<File | null>(null);
+const isUploading = ref(false);
+const uploadModalError = ref('');
+
+const downloadingFileId = ref<string | null>(null);
+const downloadError = ref('');
+
+const isDeleteModalOpen = ref(false);
+const itemToDelete = ref<FileItem | null>(null);
+const isDeleting = ref(false);
+const deleteError = ref('');
 
 function applyTheme(value: Theme) {
   theme.value = value;
@@ -15,9 +39,189 @@ function toggleTheme() {
   applyTheme(theme.value === 'light' ? 'dark' : 'light');
 }
 
+function openNewFolderModal() {
+  newFolderName.value = '';
+  folderError.value = '';
+  isFolderModalOpen.value = true;
+}
+
+function closeNewFolderModal() {
+  if (isCreatingFolder.value) return;
+  isFolderModalOpen.value = false;
+}
+
+async function createFolder() {
+  const folderName = newFolderName.value.trim();
+
+  if (!folderName) {
+    folderError.value = 'Enter a folder name.';
+    return;
+  }
+
+  isCreatingFolder.value = true;
+  folderError.value = '';
+
+  try {
+    await files.createFolder(folderName);
+    isFolderModalOpen.value = false;
+  } catch (error: unknown) {
+    console.error('Folder creation flow failed:', error);
+
+    if (isAxiosError<{ message?: string; detail?: string }>(error)) {
+      console.error('Request URL:', error.config?.baseURL, error.config?.url);
+      console.error('HTTP status:', error.response?.status);
+      console.error('API response:', error.response?.data);
+
+      folderError.value =
+        error.response?.data?.message ??
+        error.response?.data?.detail ??
+        (error.response
+          ? `Request failed (${error.response.status}).`
+          : 'No response from the API. Check the gateway, network, or CORS settings.');
+    } else {
+      folderError.value = 'Could not create the folder. Check the browser console.';
+    }
+  } finally {
+    isCreatingFolder.value = false;
+  }
+}
+
+function openUploadModal() {
+  selectedFile.value = null;
+  uploadModalError.value = '';
+  isUploadModalOpen.value = true;
+}
+
+function closeUploadModal(force = false) {
+  if (isUploading.value && !force) return;
+
+  isUploadModalOpen.value = false;
+  selectedFile.value = null;
+  uploadModalError.value = '';
+
+  if (fileInput.value) {
+    fileInput.value.value = '';
+  }
+}
+
+function handleFileSelection(event: Event) {
+  const input = event.target as HTMLInputElement;
+  selectedFile.value = input.files?.[0] ?? null;
+  uploadModalError.value = '';
+}
+
+function handleFileDrop(event: DragEvent) {
+  isDraggingFile.value = false;
+  selectedFile.value = event.dataTransfer?.files?.[0] ?? null;
+  uploadModalError.value = '';
+}
+
+async function uploadSelectedFile() {
+  if (!selectedFile.value) {
+    uploadModalError.value = 'Choose a file first.';
+    return;
+  }
+
+  isUploading.value = true;
+  uploadModalError.value = '';
+
+  try {
+    await files.uploadFile(selectedFile.value);
+    closeUploadModal(true);
+  } catch (error) {
+    console.error('File upload failed:', error);
+    uploadModalError.value = 'Could not upload the file. Please try again.';
+  } finally {
+    isUploading.value = false;
+  }
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function downloadFile(item: FileItem) {
+  downloadingFileId.value = item.public_id;
+  downloadError.value = '';
+
+  try {
+    await files.downloadFile(item.public_id);
+  } catch (error) {
+    console.error('File download failed:', error);
+    downloadError.value = 'Could not download the file. Please try again.';
+  } finally {
+    downloadingFileId.value = null;
+  }
+}
+
+function requestDelete(item: FileItem, event: MouseEvent) {
+  (event.currentTarget as HTMLElement)
+    .closest('details')
+    ?.removeAttribute('open');
+
+  itemToDelete.value = item;
+  deleteError.value = '';
+  isDeleteModalOpen.value = true;
+}
+
+function closeDeleteModal() {
+  if (isDeleting.value) return;
+
+  isDeleteModalOpen.value = false;
+  itemToDelete.value = null;
+  deleteError.value = '';
+}
+
+async function confirmDelete() {
+  if (!itemToDelete.value) return;
+
+  isDeleting.value = true;
+  deleteError.value = '';
+
+  try {
+    await files.deleteItem(itemToDelete.value.public_id);
+    isDeleteModalOpen.value = false;
+    itemToDelete.value = null;
+  } catch (error) {
+    console.error('Delete failed:', error);
+    deleteError.value = 'Could not delete this item. Please try again.';
+  } finally {
+    isDeleting.value = false;
+  }
+}
+
+async function loadContents() {
+  try {
+    await files.fetchContents();
+  } catch {
+    // The store exposes the error message for the page to display.
+  }
+}
+
+async function openFolder(item: FileItem) {
+  if (item.type !== 'FOLDER') return;
+
+  try {
+    await files.enterFolder(item);
+  } catch {
+    // The store exposes the error message for the page to display.
+  }
+}
+
+async function goBack() {
+  try {
+    await files.goBack();
+  } catch {
+    // The store exposes the error message for the page to display.
+  }
+}
+
 onMounted(() => {
   const savedTheme = localStorage.getItem('fastfiles-theme');
   applyTheme(savedTheme === 'dark' ? 'dark' : 'light');
+  void loadContents();
 });
 </script>
 
@@ -79,12 +283,8 @@ onMounted(() => {
           <strong>Files</strong>
         </div>
 
-        <button
-          class="theme-button"
-          type="button"
-          :aria-label="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'"
-          @click="toggleTheme"
-        >
+        <button class="theme-button" type="button"
+          :aria-label="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" @click="toggleTheme">
           <span aria-hidden="true">{{ theme === 'light' ? '☾' : '☀' }}</span>
           <span>{{ theme === 'light' ? 'Dark mode' : 'Light mode' }}</span>
         </button>
@@ -101,25 +301,195 @@ onMounted(() => {
           </div>
 
           <div class="heading-actions">
-            <button class="button button-secondary" type="button" disabled>
+            <button class="button button-secondary" type="button" @click="openNewFolderModal">
               <span aria-hidden="true">＋</span>
               New folder
             </button>
-            <button class="button button-primary" type="button" disabled>
+            <button class="button button-primary" type="button" @click="openUploadModal">
               <span aria-hidden="true">↑</span>
               Upload
             </button>
+
+            <input ref="fileInput" class="visually-hidden" type="file" @change="handleFileSelection" />
           </div>
         </div>
 
-        <section class="workspace-card" aria-labelledby="empty-heading">
-          <div class="empty-icon" aria-hidden="true">▤</div>
-          <p class="eyebrow">READY WHEN YOU ARE</p>
-          <h2 id="empty-heading">Your workspace is taking shape</h2>
-          <p>
-            Your folders and files will appear here after we connect FastFiles
-            to your API gateway.
+        <p v-if="downloadError" class="upload-error" role="alert">
+          {{ downloadError }}
+        </p>
+
+        <section class="workspace-card" aria-label="Your files">
+          <div class="files-toolbar">
+            <button v-if="files.keyStack.length > 0" class="back-button" type="button" @click="goBack">
+              ← Back
+            </button>
+
+            <span class="current-folder">
+              {{ files.currentKey || 'All files' }}
+            </span>
+          </div>
+
+          <p v-if="files.isLoading" class="files-message" role="status">
+            Loading your files…
           </p>
+
+          <div v-else-if="files.errorMessage" class="files-message" role="alert">
+            <p>{{ files.errorMessage }}</p>
+            <button class="back-button" type="button" @click="loadContents">
+              Try again
+            </button>
+          </div>
+
+          <div v-else-if="files.contents.length === 0" class="files-message">
+            <div class="empty-icon" aria-hidden="true">▤</div>
+            <h2>This folder is empty</h2>
+            <p>Files and folders you add will appear here.</p>
+          </div>
+
+          <ul v-else class="file-list">
+            <li v-for="item in files.contents" :key="item.public_id">
+              <div class="file-row">
+                <button v-if="item.type === 'FOLDER'" class="file-main folder-main" type="button"
+                  @click="openFolder(item)">
+                  <span class="file-icon" aria-hidden="true">📁</span>
+                  <span class="file-name">{{ item.name }}</span>
+                  <span class="item-kind">Folder</span>
+                </button>
+
+                <div v-else class="file-main">
+                  <span class="file-icon" aria-hidden="true">📄</span>
+                  <span class="file-name">{{ item.name }}</span>
+                  <span class="item-kind">File</span>
+                </div>
+
+                <details class="file-actions">
+                  <summary class="file-actions-trigger" :aria-label="`Actions for ${item.name}`" title="More actions">
+                    ⋯
+                  </summary>
+
+                  <div class="file-actions-menu">
+                    <button v-if="item.type === 'FOLDER'" type="button" @click="openFolder(item)">
+                      Open folder
+                    </button>
+
+                    <button v-else type="button" :disabled="downloadingFileId === item.public_id"
+                      @click="downloadFile(item)">
+                      {{ downloadingFileId === item.public_id ? 'Preparing…' : 'Download' }}
+                    </button>
+
+                    <button class="danger-menu-item" type="button" @click="requestDelete(item, $event)">
+                      Delete
+                    </button>
+                  </div>
+                </details>
+              </div>
+            </li>
+          </ul>
+
+          <div v-if="isFolderModalOpen" class="modal-backdrop" @click.self="closeNewFolderModal">
+            <section class="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-modal-title">
+              <h2 id="folder-modal-title">Create a folder</h2>
+              <p class="folder-modal-copy">Choose a name for your new folder.</p>
+
+              <form @submit.prevent="createFolder">
+                <label class="folder-label" for="new-folder-name">Folder name</label>
+                <input id="new-folder-name" v-model="newFolderName" class="folder-input" type="text" maxlength="120"
+                  autocomplete="off" placeholder="e.g. Project files" :disabled="isCreatingFolder" autofocus />
+
+                <p v-if="folderError" class="folder-error" role="alert">
+                  {{ folderError }}
+                </p>
+
+                <div class="folder-modal-actions">
+                  <button class="button button-secondary" type="button" :disabled="isCreatingFolder"
+                    @click="closeNewFolderModal">
+                    Cancel
+                  </button>
+                  <button class="button button-primary" type="submit" :disabled="isCreatingFolder">
+                    {{ isCreatingFolder ? 'Creating…' : 'Create folder' }}
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <div v-if="isUploadModalOpen" class="modal-backdrop" @click.self="() => closeUploadModal()">
+            <section class="folder-modal upload-modal" role="dialog" aria-modal="true"
+              aria-labelledby="upload-modal-title">
+              <h2 id="upload-modal-title">Upload a file</h2>
+              <p class="folder-modal-copy">
+                Choose a file from your device or drag it into the area below.
+              </p>
+
+              <input ref="fileInput" class="visually-hidden" type="file" :disabled="isUploading"
+                @change="handleFileSelection" />
+
+              <div class="upload-dropzone" :class="{ 'is-dragging': isDraggingFile }"
+                @dragover.prevent="isDraggingFile = true" @dragleave.prevent="isDraggingFile = false"
+                @drop.prevent="handleFileDrop">
+                <template v-if="selectedFile">
+                  <span class="upload-dropzone-icon" aria-hidden="true">📄</span>
+                  <strong class="selected-file-name">{{ selectedFile.name }}</strong>
+                  <span class="selected-file-size">
+                    {{ formatFileSize(selectedFile.size) }}
+                  </span>
+                  <button class="browse-button" type="button" :disabled="isUploading" @click="fileInput?.click()">
+                    Choose a different file
+                  </button>
+                </template>
+
+                <template v-else>
+                  <span class="upload-dropzone-icon" aria-hidden="true">↑</span>
+                  <strong>Drop your file here</strong>
+                  <span class="selected-file-size">or choose one from your device</span>
+                  <button class="browse-button" type="button" :disabled="isUploading" @click="fileInput?.click()">
+                    Browse files
+                  </button>
+                </template>
+              </div>
+
+              <p v-if="uploadModalError" class="folder-error" role="alert">
+                {{ uploadModalError }}
+              </p>
+
+              <div class="folder-modal-actions">
+                <button class="button button-secondary" type="button" :disabled="isUploading"
+                  @click="() => closeUploadModal()">
+                  Cancel
+                </button>
+                <button class="button button-primary" type="button" :disabled="isUploading || !selectedFile"
+                  @click="uploadSelectedFile">
+                  {{ isUploading ? 'Uploading…' : 'Upload file' }}
+                </button>
+              </div>
+            </section>
+          </div>
+
+          <div v-if="isDeleteModalOpen && itemToDelete" class="modal-backdrop" @click.self="closeDeleteModal">
+            <section class="folder-modal delete-modal" role="dialog" aria-modal="true"
+              aria-labelledby="delete-modal-title">
+              <div class="delete-warning-icon" aria-hidden="true">!</div>
+
+              <h2 id="delete-modal-title">Delete this item?</h2>
+              <p class="folder-modal-copy">
+                Are you sure you want to delete
+                <strong>{{ itemToDelete.name }}</strong>?
+              </p>
+
+              <p v-if="deleteError" class="folder-error" role="alert">
+                {{ deleteError }}
+              </p>
+
+              <div class="folder-modal-actions">
+                <button class="button button-secondary" type="button" :disabled="isDeleting" @click="closeDeleteModal">
+                  Cancel
+                </button>
+                <button class="button button-danger" type="button" :disabled="isDeleting" @click="confirmDelete">
+                  {{ isDeleting ? 'Deleting…' : 'Delete' }}
+                </button>
+              </div>
+            </section>
+          </div>
         </section>
 
         <footer class="page-footer">
@@ -131,384 +501,4 @@ onMounted(() => {
   </div>
 </template>
 
-<style scoped>
-.app-shell {
-  display: flex;
-  min-height: 100vh;
-  background: var(--color-bg);
-}
-
-.sidebar {
-  display: flex;
-  flex: 0 0 248px;
-  flex-direction: column;
-  min-height: 100vh;
-  padding: 28px 18px 20px;
-  background: var(--color-surface);
-  border-right: 1px solid var(--color-border);
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  margin: 0 0 48px 5px;
-  color: var(--color-text);
-  font-size: 19px;
-  font-weight: 750;
-  letter-spacing: -0.5px;
-  text-decoration: none;
-}
-
-.brand-mark {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 11px;
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-  font-size: 18px;
-  font-weight: 800;
-}
-
-.sidebar-section {
-  flex: 1;
-}
-
-.section-label,
-.eyebrow {
-  margin: 0;
-  color: var(--color-text-subtle);
-  font-size: 10px;
-  font-weight: 750;
-  letter-spacing: 1.2px;
-}
-
-.section-label {
-  padding: 0 12px;
-  margin-bottom: 12px;
-}
-
-.navigation {
-  display: grid;
-  gap: 5px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  min-height: 43px;
-  padding: 0 12px;
-  border-radius: 10px;
-  color: var(--color-text-muted);
-  font-size: 14px;
-  font-weight: 550;
-}
-
-.nav-item.is-active {
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
-  font-weight: 700;
-}
-
-.nav-icon {
-  display: inline-grid;
-  width: 20px;
-  place-items: center;
-  font-size: 18px;
-}
-
-.storage-card {
-  padding: 16px;
-  margin-top: 30px;
-  border: 1px solid var(--color-border);
-  border-radius: 14px;
-  background: var(--color-surface-soft);
-}
-
-.storage-icon {
-  color: var(--color-primary);
-  font-size: 22px;
-}
-
-.storage-title,
-.account-title {
-  margin: 8px 0 4px;
-  color: var(--color-text);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.storage-copy,
-.account-subtitle {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.sidebar-bottom {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 18px 5px 0;
-  margin-top: 18px;
-  border-top: 1px solid var(--color-border);
-}
-
-.avatar {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
-  font-size: 13px;
-  font-weight: 750;
-}
-
-.account-title {
-  margin: 0 0 3px;
-}
-
-.main-area {
-  flex: 1;
-  min-width: 0;
-}
-
-.topbar {
-  display: flex;
-  min-height: 76px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 42px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
-}
-
-.breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  color: var(--color-text-muted);
-  font-size: 13px;
-}
-
-.breadcrumb strong {
-  color: var(--color-text);
-  font-weight: 650;
-}
-
-.breadcrumb-divider {
-  color: var(--color-text-subtle);
-}
-
-.theme-button,
-.button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
-  color: var(--color-text);
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.theme-button {
-  cursor: pointer;
-}
-
-.theme-button:hover {
-  background: var(--color-surface-hover);
-}
-
-.content {
-  width: min(1120px, 100%);
-  padding: 46px 42px 28px;
-  margin: 0 auto;
-}
-
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 30px;
-}
-
-.page-heading h1 {
-  margin: 9px 0 7px;
-  color: var(--color-text);
-  font-size: clamp(28px, 4vw, 36px);
-  letter-spacing: -1.2px;
-}
-
-.page-description {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 14px;
-}
-
-.heading-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.button {
-  min-height: 43px;
-}
-
-.button-primary {
-  border-color: var(--color-primary);
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-}
-
-.button-secondary {
-  background: var(--color-surface);
-}
-
-.button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.workspace-card {
-  display: flex;
-  min-height: 370px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 32px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-card);
-  text-align: center;
-}
-
-.empty-icon {
-  display: grid;
-  width: 58px;
-  height: 58px;
-  place-items: center;
-  margin-bottom: 20px;
-  border-radius: 18px;
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
-  font-size: 27px;
-}
-
-.workspace-card h2 {
-  margin: 12px 0 8px;
-  color: var(--color-text);
-  font-size: 20px;
-  letter-spacing: -0.3px;
-}
-
-.workspace-card > p:last-child {
-  max-width: 390px;
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 14px;
-  line-height: 1.65;
-}
-
-.page-footer {
-  display: flex;
-  justify-content: space-between;
-  padding: 22px 2px 0;
-  color: var(--color-text-subtle);
-  font-size: 12px;
-}
-
-@media (max-width: 760px) {
-  .sidebar {
-    flex-basis: 76px;
-    align-items: center;
-    padding: 20px 10px;
-  }
-
-  .brand {
-    margin: 0 0 38px;
-  }
-
-  .brand > span:last-child,
-  .section-label,
-  .nav-item > span:last-child,
-  .storage-card,
-  .sidebar-bottom > div {
-    display: none;
-  }
-
-  .navigation {
-    gap: 8px;
-  }
-
-  .nav-item {
-    width: 48px;
-    justify-content: center;
-    padding: 0;
-  }
-
-  .nav-icon {
-    font-size: 20px;
-  }
-
-  .sidebar-bottom {
-    padding: 18px 0 0;
-  }
-
-  .topbar {
-    min-height: 64px;
-    padding: 0 20px;
-  }
-
-  .content {
-    padding: 32px 20px 24px;
-  }
-
-  .page-heading {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-}
-
-@media (max-width: 480px) {
-  .theme-button {
-    width: 40px;
-    padding: 0;
-    font-size: 0;
-  }
-
-  .page-heading {
-    gap: 18px;
-  }
-
-  .heading-actions {
-    width: 100%;
-  }
-
-  .heading-actions .button {
-    flex: 1;
-  }
-
-  .workspace-card {
-    min-height: 310px;
-    padding: 24px;
-  }
-
-  .page-footer {
-    flex-direction: column;
-    gap: 6px;
-  }
-}
-</style>
+<style src="../assets/styles/HomeView.css" scoped></style>
