@@ -4,6 +4,8 @@ import { useUserStore } from '../stores/user';
 import ProfileEditForm from '../components/profile/ProfileEditForm.vue';
 import ProfilePhotoEditor from '../components/profile/ProfilePhotoEditor.vue';
 import type { UserProfile } from '../stores/user';
+import { useRouter } from 'vue-router';
+import { useAuthStore } from '../stores/auth';
 
 const userStore = useUserStore();
 const isLoading = ref(false);
@@ -16,6 +18,10 @@ const updateError = ref('');
 const isUploadingPhoto = ref(false);
 const isRemovingPhoto = ref(false);
 const photoError = ref('');
+
+const authStore = useAuthStore();
+const router = useRouter();
+const isSigningOut = ref(false);
 
 const profile = computed(() => userStore.user);
 
@@ -92,6 +98,23 @@ async function loadProfile() {
     }
 }
 
+async function signOut() {
+    if (isSigningOut.value) return;
+
+    isSigningOut.value = true;
+
+    try {
+        await authStore.logout();
+    } catch (error) {
+        // The auth store clears the local session even if the logout request fails.
+        console.error('Sign-out request failed:', error);
+    } finally {
+        userStore.clearProfile();
+        await router.replace({ name: 'login' });
+        isSigningOut.value = false;
+    }
+}
+
 onMounted(() => {
     if (!profile.value) {
         void loadProfile();
@@ -102,7 +125,15 @@ onMounted(() => {
 <template>
     <main class="profile-page">
         <header class="profile-page-header">
-            <RouterLink class="profile-back-link" to="/">← Back to files</RouterLink>
+            <div class="profile-header-actions">
+                <RouterLink class="profile-back-link" to="/">
+                    ← Back to files
+                </RouterLink>
+
+                <button class="profile-signout-button" type="button" :disabled="isSigningOut" @click="signOut">
+                    {{ isSigningOut ? 'Signing out…' : 'Sign out' }}
+                </button>
+            </div>
             <p class="profile-eyebrow">ACCOUNT</p>
             <h1>Your profile</h1>
             <p class="profile-intro">View your account details.</p>

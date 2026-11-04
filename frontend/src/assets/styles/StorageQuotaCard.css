@@ -1,0 +1,103 @@
+.storage-card {
+    padding: 16px;
+    margin-top: 30px;
+    border: 1px solid var(--color-border);
+    border-radius: 14px;
+    background: var(--color-surface-soft);
+}
+
+.storage-heading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.storage-icon {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    place-items: center;
+    border-radius: 10px;
+    background: var(--color-primary-soft);
+    color: var(--color-primary);
+    font-size: 20px;
+}
+
+.storage-title {
+    margin: 0;
+    color: var(--color-text);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.storage-subtitle {
+    margin: 2px 0 0;
+    color: var(--color-text-muted);
+    font-size: 11px;
+}
+
+.storage-progress {
+    height: 7px;
+    overflow: hidden;
+    margin-top: 18px;
+    border-radius: 999px;
+    background: var(--color-border);
+}
+
+.storage-progress-fill {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    border-radius: inherit;
+    background: var(--color-primary);
+    transition: width 250ms ease;
+}
+
+.storage-usage-labels {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+    color: var(--color-text-muted);
+    font-size: 10px;
+}
+
+.storage-copy {
+    margin: 13px 0 2px;
+    color: var(--color-text);
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.storage-available,
+.storage-state {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.storage-state {
+    margin-top: 14px;
+}
+
+.storage-state p {
+    margin: 0 0 8px;
+}
+
+.storage-retry {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--color-primary);
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+@media (max-width: 760px) {
+    .storage-card {
+        display: none;
+    }
+}
