@@ -13,7 +13,6 @@ import (
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/events"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pgvector/pgvector-go"
 )
 
 func GetInternalID(ctx context.Context, publicId string, userId int64) (*int64, error) {
@@ -607,39 +606,4 @@ func GetDownloadFile(ctx context.Context, publicId string, userId int64) (*model
 	}
 
 	return &file, nil
-}
-
-func SearchByVector(ctx context.Context, vector pgvector.Vector, limit int, userId int64) ([]models.SearchResponse, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-
-	query := `
-		SELECT * FROM (
-			SELECT DISTINCT ON (e.id)
-				e.id, e.public_id, e.name, e.type,
-				1 - (fc.embedding <=> $1) AS score
-			FROM entries e
-			JOIN file_chunks fc ON e.id = fc.entry_id
-			WHERE e.user_id = $2 AND e.deleted_at IS NULL AND e.type = 'FILE'
-		) AS subquery
-		ORDER BY score DESC
-		LIMIT $3
-	`
-
-	rows, err := DB.Query(ctx, query, vector, userId, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	files := make([]models.SearchResponse, 0)
-	for rows.Next() {
-		var file models.SearchResponse
-		if err := rows.Scan(&file.ID, &file.PublicID, &file.Name, &file.Type, &file.Score); err != nil {
-			return nil, err
-		}
-		files = append(files, file)
-	}
-	return files, nil
 }

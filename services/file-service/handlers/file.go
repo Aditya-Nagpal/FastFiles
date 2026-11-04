@@ -14,10 +14,7 @@ import (
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/services/tasks"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/utils"
 
-	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/config"
-
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/httputils"
-	SharedTasks "github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/tasks"
 	"github.com/gin-gonic/gin"
 )
 
@@ -346,39 +343,5 @@ func DownloadFile(uploader *utils.S3Uploader) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{"downloadURL": url})
-	}
-}
-
-type SmartSearchRequest struct {
-	Query string `json:"query" binding:"required"`
-	Limit int    `json:"limit"`
-}
-
-func HandleSearch() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		userId, err := httputils.GetUserIdHeader(c)
-		if httputils.HandleUserIdHeaderError(c, err) {
-			return
-		}
-
-		var req SmartSearchRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"message": "invalid request", "error": err.Error()})
-			return
-		}
-
-		queryVector, err := SharedTasks.GenerateEmbedding(req.Query, config.AppConfig.OpenAiApiKey)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to generate embedding", "error": err.Error()})
-			return
-		}
-
-		files, err := db.SearchByVector(c.Request.Context(), queryVector, req.Limit, userId)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to search files", "error": err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, files)
 	}
 }
