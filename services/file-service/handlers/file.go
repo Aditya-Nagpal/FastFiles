@@ -48,7 +48,10 @@ func ListFilesByParentId() gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, files)
+		c.JSON(http.StatusOK, gin.H{
+			"total":   len(files),
+			"results": files,
+		})
 	}
 }
 
