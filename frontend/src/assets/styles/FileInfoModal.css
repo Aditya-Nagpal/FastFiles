@@ -1,0 +1,121 @@
+.info-backdrop {
+    position: fixed;
+    z-index: 30;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgb(20 18 32 / 48%);
+}
+
+.info-modal {
+    width: min(480px, 100%);
+    padding: 24px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-card);
+}
+
+.info-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.info-eyebrow {
+    margin: 0 0 7px;
+    color: var(--color-text-subtle);
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: 1.2px;
+}
+
+.info-header h2 {
+    margin: 0;
+    color: var(--color-text);
+    font-size: 21px;
+}
+
+.info-close {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.info-close:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-text);
+}
+
+.info-list {
+    display: grid;
+    gap: 0;
+    margin: 8px 0 0;
+}
+
+.info-row {
+    display: grid;
+    grid-template-columns: minmax(105px, 0.7fr) minmax(0, 1.3fr);
+    gap: 16px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.info-row dt {
+    color: var(--color-text-muted);
+    font-size: 13px;
+}
+
+.info-row dd {
+    overflow-wrap: anywhere;
+    margin: 0;
+    color: var(--color-text);
+    font-size: 13px;
+    font-weight: 550;
+    text-align: right;
+}
+
+.info-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 20px;
+}
+
+.info-done-button {
+    min-height: 40px;
+    padding: 0 16px;
+    border: 1px solid var(--color-primary);
+    border-radius: var(--radius-control);
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    font-size: 13px;
+    font-weight: 650;
+    cursor: pointer;
+}
+
+.info-done-button:hover {
+    opacity: 0.9;
+}
+
+@media (max-width: 480px) {
+    .info-modal {
+        padding: 20px 16px;
+    }
+
+    .info-row {
+        grid-template-columns: 95px minmax(0, 1fr);
+        gap: 10px;
+    }
+}

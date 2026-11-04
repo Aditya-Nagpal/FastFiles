@@ -18,6 +18,7 @@ const emit = defineEmits<{
   (event: 'open', item: FileItem): void;
   (event: 'download', item: FileItem): void;
   (event: 'delete', item: FileItem): void;
+  (event: 'info', item: FileItem): void;
 }>();
 </script>
 
@@ -85,6 +86,7 @@ const emit = defineEmits<{
             @open="emit('open', $event)"
             @download="emit('download', $event)"
             @delete="emit('delete', $event)"
+            @info="emit('info', $event)"
           />
         </div>
       </li>

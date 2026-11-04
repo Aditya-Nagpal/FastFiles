@@ -10,6 +10,7 @@ import FileList from '../components/files/FileList.vue';
 import AppSidebar from '../components/layout/AppSidebar.vue';
 import AppTopbar from '../components/layout/AppTopbar.vue';
 import AppFooter from '../components/layout/AppFooter.vue';
+import FileInfoModal from '../components/files/FileInfoModal.vue';
 import { isAxiosError } from 'axios';
 
 type Theme = 'light' | 'dark';
@@ -32,6 +33,8 @@ const isDeleteModalOpen = ref(false);
 const itemToDelete = ref<FileItem | null>(null);
 const isDeleting = ref(false);
 const deleteError = ref('');
+
+const itemForInfo = ref<FileItem | null>(null);
 
 function applyTheme(value: Theme) {
   theme.value = value;
@@ -174,6 +177,14 @@ function clearSearch() {
   files.clearSearchResults();
 }
 
+function showFileInfo(item: FileItem) {
+  itemForInfo.value = item;
+}
+
+function closeFileInfo() {
+  itemForInfo.value = null;
+}
+
 async function loadContents() {
   try {
     await files.fetchContents();
@@ -248,7 +259,7 @@ onMounted(() => {
           <FileList :items="files.contents" :total="files.total" :is-loading="files.isLoading"
             :error="files.errorMessage" :current-key="files.currentKey" :can-go-back="files.keyStack.length > 0"
             :downloading-file-id="downloadingFileId" @back="goBack" @retry="loadContents" @open="openFolder"
-            @download="downloadFile" @delete="requestDelete" />
+            @download="downloadFile" @delete="requestDelete" @info="showFileInfo" />
 
           <CreateFolderModal :open="isFolderModalOpen" :is-creating="isCreatingFolder" :error="folderError"
             @close="closeNewFolderModal" @create="createFolder" />
@@ -258,6 +269,8 @@ onMounted(() => {
 
           <ConfirmDeleteModal :open="isDeleteModalOpen" :item="itemToDelete" :is-deleting="isDeleting"
             :error="deleteError" @close="closeDeleteModal" @confirm="confirmDelete" />
+
+          <FileInfoModal :open="itemForInfo !== null" :item="itemForInfo" @close="closeFileInfo" />
         </section>
 
         <AppFooter />

@@ -16,6 +16,7 @@ const emit = defineEmits<{
   (event: 'open', item: FileItem): void;
   (event: 'download', item: FileItem): void;
   (event: 'delete', item: FileItem): void;
+  (event: 'info', item: FileItem): void;
 }>();
 
 const menuElement = ref<HTMLDetailsElement | null>(null);
@@ -54,6 +55,11 @@ function deleteItem() {
   emit('delete', props.item);
 }
 
+function showInfo() {
+  closeMenu();
+  emit('info', props.item);
+}
+
 onMounted(() => {
   document.addEventListener('pointerdown', handleOutsidePointerDown);
 });
@@ -65,34 +71,25 @@ onBeforeUnmount(() => {
 
 <template>
   <details ref="menuElement" class="file-actions">
-    <summary
-      class="file-actions-trigger"
-      :aria-label="`Actions for ${props.item.name}`"
-      title="More actions"
-    >
+    <summary class="file-actions-trigger" :aria-label="`Actions for ${props.item.name}`" title="More actions">
       ⋯
     </summary>
 
     <div class="file-actions-menu">
-      <button
-        v-if="props.item.type === 'FOLDER'"
-        type="button"
-        @click="openFolder"
-      >
+      <button v-if="props.item.type === 'FOLDER'" type="button" @click="openFolder">
         Open folder
       </button>
 
-      <button
-        v-else
-        type="button"
-        :disabled="props.downloading"
-        @click="downloadFile"
-      >
+      <button v-else type="button" :disabled="props.downloading" @click="downloadFile">
         {{ props.downloading ? 'Preparing…' : 'Download' }}
       </button>
 
       <button class="danger-menu-item" type="button" @click="deleteItem">
         Delete
+      </button>
+
+      <button type="button" @click="showInfo">
+        Information
       </button>
     </div>
   </details>
