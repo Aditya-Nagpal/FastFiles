@@ -3,10 +3,13 @@ import { onMounted, ref } from 'vue';
 import { useFilesStore } from '../stores/files';
 import type { FileItem, FileSearchMode } from '../stores/files';
 import FileSearch from '../components/files/FileSearch.vue';
-import FileActionsMenu from '../components/files/FileActionsMenu.vue';
 import CreateFolderModal from '../components/files/CreateFolderModal.vue';
 import UploadFileModal from '../components/files/UploadFileModal.vue';
 import ConfirmDeleteModal from '../components/files/ConfirmDeleteModal.vue';
+import FileList from '../components/files/FileList.vue';
+import AppSidebar from '../components/layout/AppSidebar.vue';
+import AppTopbar from '../components/layout/AppTopbar.vue';
+import AppFooter from '../components/layout/AppFooter.vue';
 import { isAxiosError } from 'axios';
 
 type Theme = 'light' | 'dark';
@@ -206,68 +209,10 @@ onMounted(() => {
 
 <template>
   <div class="app-shell">
-    <aside class="sidebar">
-      <a class="brand" href="/" aria-label="FastFiles home">
-        <span class="brand-mark">F</span>
-        <span>FastFiles</span>
-      </a>
-
-      <div class="sidebar-section">
-        <p class="section-label">Workspace</p>
-
-        <nav class="navigation" aria-label="Main navigation">
-          <div class="nav-item is-active" aria-current="page">
-            <span class="nav-icon">▤</span>
-            <span>Files</span>
-          </div>
-          <div class="nav-item">
-            <span class="nav-icon">♧</span>
-            <span>Shared</span>
-          </div>
-          <div class="nav-item">
-            <span class="nav-icon">◷</span>
-            <span>Recent</span>
-          </div>
-          <div class="nav-item">
-            <span class="nav-icon">☆</span>
-            <span>Starred</span>
-          </div>
-          <div class="nav-item">
-            <span class="nav-icon">▱</span>
-            <span>Trash</span>
-          </div>
-        </nav>
-      </div>
-
-      <div class="storage-card">
-        <div class="storage-icon">◇</div>
-        <p class="storage-title">Storage</p>
-        <p class="storage-copy">Usage details will appear when we connect your file service.</p>
-      </div>
-
-      <div class="sidebar-bottom">
-        <span class="avatar">U</span>
-        <div>
-          <p class="account-title">Your account</p>
-          <p class="account-subtitle">Profile settings</p>
-        </div>
-      </div>
-    </aside>
+    <AppSidebar />
 
     <main class="main-area">
-      <header class="topbar">
-        <div class="breadcrumb">
-          <span>Workspace</span>
-          <span class="breadcrumb-divider">/</span>
-          <strong>Files</strong>
-        </div>
-
-        <button class="theme-button" type="button"
-          :aria-label="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'" @click="toggleTheme">
-          <span aria-hidden="true">{{ theme === 'light' ? '☾' : '☀' }}</span>
-          <span>{{ theme === 'light' ? 'Dark mode' : 'Light mode' }}</span>
-        </button>
-      </header>
+      <AppTopbar :theme="theme" @toggle-theme="toggleTheme" />
 
       <section class="content">
         <div class="page-heading">
@@ -300,54 +245,10 @@ onMounted(() => {
         </p>
 
         <section class="workspace-card" aria-label="Your files">
-          <div class="files-toolbar">
-            <button v-if="files.keyStack.length > 0" class="back-button" type="button" @click="goBack">
-              ← Back
-            </button>
-
-            <span class="current-folder">
-              {{ files.currentKey || 'All files' }}
-            </span>
-          </div>
-
-          <p v-if="files.isLoading" class="files-message" role="status">
-            Loading your files…
-          </p>
-
-          <div v-else-if="files.errorMessage" class="files-message" role="alert">
-            <p>{{ files.errorMessage }}</p>
-            <button class="back-button" type="button" @click="loadContents">
-              Try again
-            </button>
-          </div>
-
-          <div v-else-if="files.contents.length === 0" class="files-message">
-            <div class="empty-icon" aria-hidden="true">▤</div>
-            <h2>This folder is empty</h2>
-            <p>Files and folders you add will appear here.</p>
-          </div>
-
-          <ul v-else class="file-list">
-            <li v-for="item in files.contents" :key="item.public_id">
-              <div class="file-row">
-                <button v-if="item.type === 'FOLDER'" class="file-main folder-main" type="button"
-                  @click="openFolder(item)">
-                  <span class="file-icon" aria-hidden="true">📁</span>
-                  <span class="file-name">{{ item.name }}</span>
-                  <span class="item-kind">Folder</span>
-                </button>
-
-                <div v-else class="file-main">
-                  <span class="file-icon" aria-hidden="true">📄</span>
-                  <span class="file-name">{{ item.name }}</span>
-                  <span class="item-kind">File</span>
-                </div>
-
-                <FileActionsMenu :item="item" :downloading="downloadingFileId === item.public_id" @open="openFolder"
-                  @download="downloadFile" @delete="requestDelete" />
-              </div>
-            </li>
-          </ul>
+          <FileList :items="files.contents" :total="files.total" :is-loading="files.isLoading"
+            :error="files.errorMessage" :current-key="files.currentKey" :can-go-back="files.keyStack.length > 0"
+            :downloading-file-id="downloadingFileId" @back="goBack" @retry="loadContents" @open="openFolder"
+            @download="downloadFile" @delete="requestDelete" />
 
           <CreateFolderModal :open="isFolderModalOpen" :is-creating="isCreatingFolder" :error="folderError"
             @close="closeNewFolderModal" @create="createFolder" />
@@ -359,10 +260,7 @@ onMounted(() => {
             :error="deleteError" @close="closeDeleteModal" @confirm="confirmDelete" />
         </section>
 
-        <footer class="page-footer">
-          <span>FastFiles</span>
-          <span>Secure file storage, made simple.</span>
-        </footer>
+        <AppFooter />
       </section>
     </main>
   </div>

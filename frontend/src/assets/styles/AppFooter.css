@@ -1,0 +1,14 @@
+.page-footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 22px 2px 0;
+  color: var(--color-text-subtle);
+  font-size: 12px;
+}
+
+@media (max-width: 480px) {
+  .page-footer {
+    flex-direction: column;
+    gap: 6px;
+  }
+}
