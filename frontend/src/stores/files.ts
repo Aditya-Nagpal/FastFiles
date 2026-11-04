@@ -3,10 +3,19 @@ import { apiClient } from '../api/http';
 import { apiRoutes } from '../api/routes';
 
 export interface FileItem {
-    name: string;
-    type: 'FILE' | 'FOLDER' | string;
     public_id: string;
-    [key: string]: unknown;
+    name: string;
+    type: string;
+    content_type?: string | null;
+    extension?: string | null;
+    size?: number | null;
+    created_at?: string;
+    updated_at?: string;
+}
+
+interface FileResponse {
+    results: FileItem[];
+    total: number;
 }
 
 interface FolderLocation {
@@ -14,14 +23,23 @@ interface FolderLocation {
     id: string | null;
 }
 
+export type FileSearchMode = 'named' | 'smart';
+
 export const useFilesStore = defineStore('files', {
     state: () => ({
         parentId: null as string | null,
         currentKey: '',
         keyStack: [] as FolderLocation[],
+
         contents: [] as FileItem[],
+        total: 0,
         isLoading: false,
         errorMessage: '',
+
+        searchResults: [] as FileItem[],
+        searchTotal: 0,
+        isSearching: false,
+        searchError: '',
     }),
 
     actions: {
@@ -30,14 +48,16 @@ export const useFilesStore = defineStore('files', {
             this.errorMessage = '';
 
             try {
-                const response = await apiClient.get<FileItem[]>(
+                const response = await apiClient.get<FileResponse>(
                     `${apiRoutes.files}/list`,
                     {
                         params: this.parentId ? { parent_id: this.parentId } : {},
                     },
                 );
 
-                this.contents = response.data;
+                this.contents = response.data.results;
+                this.total = response.data.total;
+
                 return this.contents;
             } catch (error) {
                 this.errorMessage = 'Could not load your files. Please try again.';
@@ -45,6 +65,41 @@ export const useFilesStore = defineStore('files', {
             } finally {
                 this.isLoading = false;
             }
+        },
+
+        async searchFiles(
+            query: string,
+            mode: FileSearchMode,
+            limit = 20,
+        ) {
+            this.isSearching = true;
+            this.searchError = '';
+
+            try {
+                const response = await apiClient.post<FileResponse>(
+                    `${apiRoutes.files}/${apiRoutes.search[mode]}`,
+                    {
+                        query: query.trim(),
+                        limit,
+                    },
+                );
+
+                this.searchResults = response.data.results;
+                this.searchTotal = response.data.total;
+
+                return response.data;
+            } catch (error) {
+                this.searchError = 'Search failed. Please try again.';
+                throw error;
+            } finally {
+                this.isSearching = false;
+            }
+        },
+
+        clearSearchResults() {
+            this.searchResults = [];
+            this.searchTotal = 0;
+            this.searchError = '';
         },
 
         async enterFolder(folder: FileItem) {
@@ -106,6 +161,18 @@ export const useFilesStore = defineStore('files', {
 
         async deleteItem(publicId: string) {
             await apiClient.delete(`${apiRoutes.files}/delete/${publicId}`);
+
+            const wasInSearchResults = this.searchResults.some(
+                (item) => item.public_id === publicId,
+            );
+
+            if (wasInSearchResults) {
+                this.searchResults = this.searchResults.filter(
+                    (item) => item.public_id !== publicId,
+                );
+                this.searchTotal = Math.max(0, this.searchTotal - 1);
+            }
+
             await this.fetchContents();
         },
     },

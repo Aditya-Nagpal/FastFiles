@@ -1,0 +1,95 @@
+.modal-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(20 18 32 / 45%);
+}
+
+.delete-modal {
+  width: min(440px, 100%);
+  padding: 26px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.delete-warning-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  background: rgb(180 35 24 / 9%);
+  color: #b42318;
+  font-size: 22px;
+  font-weight: 750;
+}
+
+.delete-modal h2 {
+  margin: 14px 0 7px;
+  color: var(--color-text);
+  font-size: 20px;
+}
+
+.modal-copy {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.modal-copy strong {
+  color: var(--color-text);
+}
+
+.modal-error {
+  margin: 9px 0 0;
+  color: #b42318;
+  font-size: 13px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.button {
+  display: inline-flex;
+  min-height: 43px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.button-secondary {
+  background: var(--color-surface);
+}
+
+.button-danger {
+  border-color: #b42318;
+  background: #b42318;
+  color: #fff;
+}
+
+.button-danger:hover {
+  background: #912018;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}

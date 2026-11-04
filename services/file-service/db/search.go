@@ -36,6 +36,11 @@ func SearchByVector(ctx context.Context, userId int64, vector pgvector.Vector, l
 		if err := rows.Scan(&file.PublicId, &file.Name, &file.Type, &file.ContentType, &file.Extension, &file.Size, &file.CreatedAt, &file.UpdatedAt, &score); err != nil {
 			return nil, err
 		}
+
+		if file.Extension != "" {
+			file.Name = file.Name + "." + file.Extension
+		}
+
 		files = append(files, file)
 	}
 	return files, nil
@@ -100,6 +105,10 @@ func SearchByName(ctx context.Context, userID int64, query string, limit int) ([
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan named search result: %w", err)
+		}
+
+		if result.Extension != "" {
+			result.Name = result.Name + "." + result.Extension
 		}
 
 		results = append(results, result)

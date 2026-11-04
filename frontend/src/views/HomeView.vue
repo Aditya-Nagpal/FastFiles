@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useFilesStore } from '../stores/files';
-import type { FileItem } from '../stores/files';
+import type { FileItem, FileSearchMode } from '../stores/files';
+import FileSearch from '../components/files/FileSearch.vue';
+import FileActionsMenu from '../components/files/FileActionsMenu.vue';
+import CreateFolderModal from '../components/files/CreateFolderModal.vue';
+import UploadFileModal from '../components/files/UploadFileModal.vue';
+import ConfirmDeleteModal from '../components/files/ConfirmDeleteModal.vue';
 import { isAxiosError } from 'axios';
 
 type Theme = 'light' | 'dark';
@@ -10,14 +15,10 @@ const theme = ref<Theme>('light');
 const files = useFilesStore();
 
 const isFolderModalOpen = ref(false);
-const newFolderName = ref('');
 const isCreatingFolder = ref(false);
 const folderError = ref('');
 
-const fileInput = ref<HTMLInputElement | null>(null);
 const isUploadModalOpen = ref(false);
-const isDraggingFile = ref(false);
-const selectedFile = ref<File | null>(null);
 const isUploading = ref(false);
 const uploadModalError = ref('');
 
@@ -40,7 +41,6 @@ function toggleTheme() {
 }
 
 function openNewFolderModal() {
-  newFolderName.value = '';
   folderError.value = '';
   isFolderModalOpen.value = true;
 }
@@ -50,14 +50,7 @@ function closeNewFolderModal() {
   isFolderModalOpen.value = false;
 }
 
-async function createFolder() {
-  const folderName = newFolderName.value.trim();
-
-  if (!folderName) {
-    folderError.value = 'Enter a folder name.';
-    return;
-  }
-
+async function createFolder(folderName: string) {
   isCreatingFolder.value = true;
   folderError.value = '';
 
@@ -87,59 +80,30 @@ async function createFolder() {
 }
 
 function openUploadModal() {
-  selectedFile.value = null;
   uploadModalError.value = '';
   isUploadModalOpen.value = true;
 }
 
-function closeUploadModal(force = false) {
-  if (isUploading.value && !force) return;
+function closeUploadModal() {
+  if (isUploading.value) return;
 
   isUploadModalOpen.value = false;
-  selectedFile.value = null;
-  uploadModalError.value = '';
-
-  if (fileInput.value) {
-    fileInput.value.value = '';
-  }
-}
-
-function handleFileSelection(event: Event) {
-  const input = event.target as HTMLInputElement;
-  selectedFile.value = input.files?.[0] ?? null;
   uploadModalError.value = '';
 }
 
-function handleFileDrop(event: DragEvent) {
-  isDraggingFile.value = false;
-  selectedFile.value = event.dataTransfer?.files?.[0] ?? null;
-  uploadModalError.value = '';
-}
-
-async function uploadSelectedFile() {
-  if (!selectedFile.value) {
-    uploadModalError.value = 'Choose a file first.';
-    return;
-  }
-
+async function uploadSelectedFile(file: File) {
   isUploading.value = true;
   uploadModalError.value = '';
 
   try {
-    await files.uploadFile(selectedFile.value);
-    closeUploadModal(true);
+    await files.uploadFile(file);
+    isUploadModalOpen.value = false;
   } catch (error) {
     console.error('File upload failed:', error);
     uploadModalError.value = 'Could not upload the file. Please try again.';
   } finally {
     isUploading.value = false;
   }
-}
-
-function formatFileSize(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 async function downloadFile(item: FileItem) {
@@ -156,9 +120,9 @@ async function downloadFile(item: FileItem) {
   }
 }
 
-function requestDelete(item: FileItem, event: MouseEvent) {
-  (event.currentTarget as HTMLElement)
-    .closest('details')
+function requestDelete(item: FileItem, event?: MouseEvent) {
+  (event?.currentTarget as HTMLElement | undefined)
+    ?.closest('details')
     ?.removeAttribute('open');
 
   itemToDelete.value = item;
@@ -190,6 +154,21 @@ async function confirmDelete() {
   } finally {
     isDeleting.value = false;
   }
+}
+
+async function handleSearch(payload: {
+  query: string;
+  mode: FileSearchMode;
+}) {
+  try {
+    await files.searchFiles(payload.query, payload.mode);
+  } catch {
+    // The store exposes the search error for the component to display.
+  }
+}
+
+function clearSearch() {
+  files.clearSearchResults();
 }
 
 async function loadContents() {
@@ -309,10 +288,12 @@ onMounted(() => {
               <span aria-hidden="true">↑</span>
               Upload
             </button>
-
-            <input ref="fileInput" class="visually-hidden" type="file" @change="handleFileSelection" />
           </div>
         </div>
+
+        <FileSearch :results="files.searchResults" :total="files.searchTotal" :is-searching="files.isSearching"
+          :error="files.searchError" @search="handleSearch" @clear="clearSearch" @download="downloadFile"
+          @open="openFolder" @delete="requestDelete" />
 
         <p v-if="downloadError" class="upload-error" role="alert">
           {{ downloadError }}
@@ -362,134 +343,20 @@ onMounted(() => {
                   <span class="item-kind">File</span>
                 </div>
 
-                <details class="file-actions">
-                  <summary class="file-actions-trigger" :aria-label="`Actions for ${item.name}`" title="More actions">
-                    ⋯
-                  </summary>
-
-                  <div class="file-actions-menu">
-                    <button v-if="item.type === 'FOLDER'" type="button" @click="openFolder(item)">
-                      Open folder
-                    </button>
-
-                    <button v-else type="button" :disabled="downloadingFileId === item.public_id"
-                      @click="downloadFile(item)">
-                      {{ downloadingFileId === item.public_id ? 'Preparing…' : 'Download' }}
-                    </button>
-
-                    <button class="danger-menu-item" type="button" @click="requestDelete(item, $event)">
-                      Delete
-                    </button>
-                  </div>
-                </details>
+                <FileActionsMenu :item="item" :downloading="downloadingFileId === item.public_id" @open="openFolder"
+                  @download="downloadFile" @delete="requestDelete" />
               </div>
             </li>
           </ul>
 
-          <div v-if="isFolderModalOpen" class="modal-backdrop" @click.self="closeNewFolderModal">
-            <section class="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-modal-title">
-              <h2 id="folder-modal-title">Create a folder</h2>
-              <p class="folder-modal-copy">Choose a name for your new folder.</p>
+          <CreateFolderModal :open="isFolderModalOpen" :is-creating="isCreatingFolder" :error="folderError"
+            @close="closeNewFolderModal" @create="createFolder" />
 
-              <form @submit.prevent="createFolder">
-                <label class="folder-label" for="new-folder-name">Folder name</label>
-                <input id="new-folder-name" v-model="newFolderName" class="folder-input" type="text" maxlength="120"
-                  autocomplete="off" placeholder="e.g. Project files" :disabled="isCreatingFolder" autofocus />
+          <UploadFileModal :open="isUploadModalOpen" :is-uploading="isUploading" :error="uploadModalError"
+            @close="closeUploadModal" @upload="uploadSelectedFile" />
 
-                <p v-if="folderError" class="folder-error" role="alert">
-                  {{ folderError }}
-                </p>
-
-                <div class="folder-modal-actions">
-                  <button class="button button-secondary" type="button" :disabled="isCreatingFolder"
-                    @click="closeNewFolderModal">
-                    Cancel
-                  </button>
-                  <button class="button button-primary" type="submit" :disabled="isCreatingFolder">
-                    {{ isCreatingFolder ? 'Creating…' : 'Create folder' }}
-                  </button>
-                </div>
-              </form>
-            </section>
-          </div>
-
-          <div v-if="isUploadModalOpen" class="modal-backdrop" @click.self="() => closeUploadModal()">
-            <section class="folder-modal upload-modal" role="dialog" aria-modal="true"
-              aria-labelledby="upload-modal-title">
-              <h2 id="upload-modal-title">Upload a file</h2>
-              <p class="folder-modal-copy">
-                Choose a file from your device or drag it into the area below.
-              </p>
-
-              <input ref="fileInput" class="visually-hidden" type="file" :disabled="isUploading"
-                @change="handleFileSelection" />
-
-              <div class="upload-dropzone" :class="{ 'is-dragging': isDraggingFile }"
-                @dragover.prevent="isDraggingFile = true" @dragleave.prevent="isDraggingFile = false"
-                @drop.prevent="handleFileDrop">
-                <template v-if="selectedFile">
-                  <span class="upload-dropzone-icon" aria-hidden="true">📄</span>
-                  <strong class="selected-file-name">{{ selectedFile.name }}</strong>
-                  <span class="selected-file-size">
-                    {{ formatFileSize(selectedFile.size) }}
-                  </span>
-                  <button class="browse-button" type="button" :disabled="isUploading" @click="fileInput?.click()">
-                    Choose a different file
-                  </button>
-                </template>
-
-                <template v-else>
-                  <span class="upload-dropzone-icon" aria-hidden="true">↑</span>
-                  <strong>Drop your file here</strong>
-                  <span class="selected-file-size">or choose one from your device</span>
-                  <button class="browse-button" type="button" :disabled="isUploading" @click="fileInput?.click()">
-                    Browse files
-                  </button>
-                </template>
-              </div>
-
-              <p v-if="uploadModalError" class="folder-error" role="alert">
-                {{ uploadModalError }}
-              </p>
-
-              <div class="folder-modal-actions">
-                <button class="button button-secondary" type="button" :disabled="isUploading"
-                  @click="() => closeUploadModal()">
-                  Cancel
-                </button>
-                <button class="button button-primary" type="button" :disabled="isUploading || !selectedFile"
-                  @click="uploadSelectedFile">
-                  {{ isUploading ? 'Uploading…' : 'Upload file' }}
-                </button>
-              </div>
-            </section>
-          </div>
-
-          <div v-if="isDeleteModalOpen && itemToDelete" class="modal-backdrop" @click.self="closeDeleteModal">
-            <section class="folder-modal delete-modal" role="dialog" aria-modal="true"
-              aria-labelledby="delete-modal-title">
-              <div class="delete-warning-icon" aria-hidden="true">!</div>
-
-              <h2 id="delete-modal-title">Delete this item?</h2>
-              <p class="folder-modal-copy">
-                Are you sure you want to delete
-                <strong>{{ itemToDelete.name }}</strong>?
-              </p>
-
-              <p v-if="deleteError" class="folder-error" role="alert">
-                {{ deleteError }}
-              </p>
-
-              <div class="folder-modal-actions">
-                <button class="button button-secondary" type="button" :disabled="isDeleting" @click="closeDeleteModal">
-                  Cancel
-                </button>
-                <button class="button button-danger" type="button" :disabled="isDeleting" @click="confirmDelete">
-                  {{ isDeleting ? 'Deleting…' : 'Delete' }}
-                </button>
-              </div>
-            </section>
-          </div>
+          <ConfirmDeleteModal :open="isDeleteModalOpen" :item="itemToDelete" :is-deleting="isDeleting"
+            :error="deleteError" @close="closeDeleteModal" @confirm="confirmDelete" />
         </section>
 
         <footer class="page-footer">
