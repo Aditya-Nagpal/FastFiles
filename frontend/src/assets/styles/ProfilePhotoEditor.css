@@ -1,0 +1,119 @@
+.profile-photo-editor {
+  position: relative;
+  flex: 0 0 76px;
+  width: 76px;
+}
+
+.profile-photo-input {
+  display: none;
+}
+
+.profile-photo-menu {
+  position: relative;
+  width: 76px;
+}
+
+.profile-photo-trigger {
+  position: relative;
+  display: block;
+  width: 76px;
+  height: 76px;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  list-style: none;
+}
+
+.profile-photo-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.profile-photo-avatar {
+  display: block;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.profile-photo-fallback {
+  display: grid;
+  place-items: center;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 25px;
+  font-weight: 750;
+}
+
+.profile-photo-camera {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  border: 2px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: 17px;
+  line-height: 1;
+  transition: transform 150ms ease;
+}
+
+.profile-photo-trigger:hover .profile-photo-camera,
+.profile-photo-menu[open] .profile-photo-camera {
+  transform: scale(1.08);
+}
+
+.profile-photo-menu-panel {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 9px);
+  left: 0;
+  width: 160px;
+  padding: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.profile-photo-menu-panel button {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.profile-photo-menu-panel button:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
+.profile-photo-menu-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.profile-photo-menu-panel .profile-photo-remove {
+  color: #b42318;
+}
+
+.profile-photo-error {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: max-content;
+  max-width: 220px;
+  margin: 0;
+  color: #b42318;
+  font-size: 12px;
+}

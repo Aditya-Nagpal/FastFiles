@@ -5,6 +5,7 @@ import ResetPasswordView from '../views/ResetPasswordView.vue';
 import SignInView from '../views/SignInView.vue';
 import SignUpView from '../views/SignUpView.vue';
 import VerifyOtpView from '../views/VerifyOtpView.vue';
+import ProfileView from '../views/ProfileView.vue';
 import { pinia } from '../stores/pinia';
 import { useAuthStore } from '../stores/auth';
 import { useUserStore } from '../stores/user';
@@ -27,6 +28,12 @@ const router = createRouter({
     {
       path: '/user/forgot-password/reset-password',
       component: ResetPasswordView,
+    },
+    {
+      path: '/user/profile',
+      name: 'profile',
+      component: ProfileView,
+      meta: { requiresAuth: true },
     },
   ],
 });

@@ -1,0 +1,230 @@
+.profile-edit-form {
+  padding-top: 24px;
+}
+
+.profile-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.profile-field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.profile-field input,
+.profile-field select,
+.profile-field textarea {
+  width: 100%;
+  min-height: 43px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 400;
+}
+
+.profile-field textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+
+.profile-field input:focus,
+.profile-field select:focus,
+.profile-field textarea:focus {
+  border-color: var(--color-primary);
+  outline: 3px solid var(--color-primary-soft);
+}
+
+.profile-field-about {
+  grid-column: 1 / -1;
+}
+
+.profile-field small {
+  color: var(--color-text-subtle);
+  font-size: 11px;
+  font-weight: 400;
+  text-align: right;
+}
+
+.profile-form-error {
+  margin: 16px 0 0;
+  color: #b42318;
+  font-size: 13px;
+}
+
+.profile-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 22px;
+}
+
+.profile-cancel-button,
+.profile-save-button {
+  min-height: 42px;
+  padding: 0 15px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.profile-cancel-button {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.profile-save-button {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.profile-cancel-button:disabled,
+.profile-save-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (max-width: 600px) {
+  .profile-edit-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .profile-field-about {
+    grid-column: auto;
+  }
+}
+
+.profile-phone-input {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-bg);
+}
+
+.profile-phone-input:focus-within {
+  border-color: var(--color-primary);
+  outline: 3px solid var(--color-primary-soft);
+}
+
+.country-code-picker {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 112px;
+}
+
+.country-code-trigger {
+  display: flex;
+  height: 43px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 9px;
+  border-right: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.country-code-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.country-code-trigger img,
+.country-option img {
+  width: 20px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  object-fit: cover;
+}
+
+.country-code-chevron {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.country-code-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 260px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.country-option {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.country-option:hover {
+  background: var(--color-surface-hover);
+}
+
+.country-option-name {
+  overflow: hidden;
+  flex: 1;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.country-option-code {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.profile-field .phone-number-input {
+  min-width: 0;
+  min-height: 43px;
+  flex: 1;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 400;
+}
+
+.profile-field .phone-number-input:focus {
+  outline: 0;
+}
+
+@media (max-width: 480px) {
+  .profile-phone-input {
+    grid-template-columns: 1fr;
+  }
+}
