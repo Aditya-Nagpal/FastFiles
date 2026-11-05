@@ -13,7 +13,7 @@ func SearchByVector(ctx context.Context, userId int64, vector pgvector.Vector, l
 	query := `
 		SELECT * FROM (
 			SELECT DISTINCT ON (e.id)
-				e.public_id, e.name, e.type, e.content_type, e.extension, e.size, e.created_at, e.updated_at,
+				e.public_id, e.name, e.type, e.content_type, e.extension, e.size, e.created_at, e.updated_at, e.is_starred,
 				1 - (fc.embedding <=> $1) AS score
 			FROM entries e
 			JOIN file_chunks fc ON e.id = fc.entry_id
@@ -33,7 +33,7 @@ func SearchByVector(ctx context.Context, userId int64, vector pgvector.Vector, l
 	for rows.Next() {
 		var file models.ListFileResponse
 		var score float64
-		if err := rows.Scan(&file.PublicId, &file.Name, &file.Type, &file.ContentType, &file.Extension, &file.Size, &file.CreatedAt, &file.UpdatedAt, &score); err != nil {
+		if err := rows.Scan(&file.PublicId, &file.Name, &file.Type, &file.ContentType, &file.Extension, &file.Size, &file.CreatedAt, &file.UpdatedAt, &file.IsStarred, &score); err != nil {
 			return nil, err
 		}
 
@@ -67,7 +67,7 @@ func SearchByName(ctx context.Context, userID int64, query string, limit int) ([
 
 	sqlQuery := `
 		SELECT
-			e.public_id, e.name, e.type, e.content_type, e.extension, e.size, e.created_at, e.updated_at
+			e.public_id, e.name, e.type, e.content_type, e.extension, e.size, e.created_at, e.updated_at, e.is_starred
 		FROM entries e
 		WHERE e.user_id = $1
 			AND e.deleted_at IS NULL
@@ -102,6 +102,7 @@ func SearchByName(ctx context.Context, userID int64, query string, limit int) ([
 			&result.Size,
 			&result.CreatedAt,
 			&result.UpdatedAt,
+			&result.IsStarred,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan named search result: %w", err)

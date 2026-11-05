@@ -16,4 +16,6 @@ func SetupRoutes(r *gin.Engine, s3Uploader *utils.S3Uploader, taskService *tasks
 	r.POST("/search/named", handlers.HandleNamedSearch())
 	r.POST("/search/smart", handlers.HandleSmartSearch())
 	r.GET("/storage/quota", handlers.GetStorageQuota())
+	r.PATCH("/starred/:id", handlers.HandleUpdateStarred())
+	r.GET("/starred", handlers.HandleGetStarredEntries())
 }

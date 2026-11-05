@@ -14,6 +14,7 @@ type ListFileResponse struct {
 	Size        int64     `json:"size"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	IsStarred   bool      `json:"is_starred"`
 }
 
 type EntryData struct {

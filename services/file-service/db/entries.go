@@ -51,7 +51,8 @@ func GetFilesByParentId(ctx context.Context, userId int64, internalParentID *int
 			extension,
 			size,
 			created_at,
-			updated_at
+			updated_at,
+			is_starred
 		FROM entries
 		WHERE user_id = $1
 			AND (
@@ -73,7 +74,7 @@ func GetFilesByParentId(ctx context.Context, userId int64, internalParentID *int
 	files := make([]models.ListFileResponse, 0)
 	for rows.Next() {
 		var file models.ListFileResponse
-		if err := rows.Scan(&file.PublicId, &file.Name, &file.Type, &file.ContentType, &file.Extension, &file.Size, &file.CreatedAt, &file.UpdatedAt); err != nil {
+		if err := rows.Scan(&file.PublicId, &file.Name, &file.Type, &file.ContentType, &file.Extension, &file.Size, &file.CreatedAt, &file.UpdatedAt, &file.IsStarred); err != nil {
 			return nil, err
 		}
 
@@ -606,4 +607,82 @@ func GetDownloadFile(ctx context.Context, publicId string, userId int64) (*model
 	}
 
 	return &file, nil
+}
+
+func UpdateStarredStatus(ctx context.Context, userID int64, publicID string, isStarred bool) error {
+	query := `
+		UPDATE entries
+		SET is_starred = $1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE public_id = $2
+		  AND user_id = $3
+		  AND deleted_at IS NULL
+	`
+
+	tag, err := DB.Exec(ctx, query, isStarred, publicID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to update starred status: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+
+	return nil
+}
+
+func GetStarredEntries(ctx context.Context, userID int64, limit int, offset int) ([]models.ListFileResponse, error) {
+	query := `
+		SELECT
+			e.public_id,
+			e.name,
+			e.type,
+			e.content_type,
+			e.extension,
+			e.size,
+			e.created_at,
+			e.updated_at,
+			e.is_starred
+		FROM entries e
+		WHERE e.user_id = $1
+		  AND e.is_starred = TRUE
+		  AND e.deleted_at IS NULL
+		ORDER BY e.updated_at DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := DB.Query(ctx, query, userID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch starred entries: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]models.ListFileResponse, 0)
+
+	for rows.Next() {
+		var item models.ListFileResponse
+
+		err := rows.Scan(
+			&item.PublicId,
+			&item.Name,
+			&item.Type,
+			&item.ContentType,
+			&item.Extension,
+			&item.Size,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+			&item.IsStarred,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan starred entry: %w", err)
+		}
+
+		results = append(results, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read starred entries: %w", err)
+	}
+
+	return results, nil
 }
