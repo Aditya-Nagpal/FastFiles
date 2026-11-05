@@ -9,6 +9,7 @@ import ProfileView from '../views/ProfileView.vue';
 import { pinia } from '../stores/pinia';
 import { useAuthStore } from '../stores/auth';
 import { useUserStore } from '../stores/user';
+import StarredView from '../views/StarredView.vue';
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -33,6 +34,12 @@ const router = createRouter({
       path: '/user/profile',
       name: 'profile',
       component: ProfileView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/starred',
+      name: 'starred',
+      component: StarredView,
       meta: { requiresAuth: true },
     },
   ],

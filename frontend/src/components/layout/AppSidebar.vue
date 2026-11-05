@@ -53,10 +53,10 @@ async function signOut() {
       <p class="section-label">Workspace</p>
 
       <nav class="navigation" aria-label="Main navigation">
-        <div class="nav-item is-active" aria-current="page">
+        <RouterLink class="nav-item" to="/" exact-active-class="is-active">
           <span class="nav-icon">▤</span>
           <span>Files</span>
-        </div>
+        </RouterLink>
         <div class="nav-item">
           <span class="nav-icon">♧</span>
           <span>Shared</span>
@@ -65,10 +65,10 @@ async function signOut() {
           <span class="nav-icon">◷</span>
           <span>Recent</span>
         </div>
-        <div class="nav-item">
+        <RouterLink class="nav-item" to="/starred" exact-active-class="is-active">
           <span class="nav-icon">☆</span>
           <span>Starred</span>
-        </div>
+        </RouterLink>
         <div class="nav-item">
           <span class="nav-icon">▱</span>
           <span>Trash</span>

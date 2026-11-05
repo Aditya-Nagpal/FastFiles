@@ -3,16 +3,24 @@ import type { FileItem } from '../../stores/files';
 import FileActionsMenu from './FileActionsMenu.vue';
 import FileStarButton from './FileStarButton.vue';
 
-const props = defineProps<{
-  items: FileItem[];
-  total: number;
-  isLoading: boolean;
-  error: string;
-  currentKey: string;
-  canGoBack: boolean;
-  downloadingFileId: string | null;
-  updatingStarredIds?: string[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    items: FileItem[];
+    total: number;
+    isLoading: boolean;
+    error: string;
+    currentKey: string;
+    canGoBack: boolean;
+    downloadingFileId: string | null;
+    updatingStarredIds?: string[];
+    emptyTitle?: string;
+    emptyDescription?: string;
+  }>(),
+  {
+    emptyTitle: 'This folder is empty',
+    emptyDescription: 'Files and folders you add will appear here.',
+  },
+);
 
 const emit = defineEmits<{
   (event: 'back'): void;
@@ -58,8 +66,8 @@ function handleStarToggle(item: FileItem, isStarred: boolean) {
 
     <div v-else-if="props.items.length === 0" class="files-message">
       <div class="empty-icon" aria-hidden="true">▤</div>
-      <h2>This folder is empty</h2>
-      <p>Files and folders you add will appear here.</p>
+      <h2>{{ props.emptyTitle }}</h2>
+      <p>{{ props.emptyDescription }}</p>
     </div>
 
     <ul v-else class="file-list">

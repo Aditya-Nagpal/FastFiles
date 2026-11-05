@@ -67,6 +67,12 @@
   color: var(--color-text-muted);
   font-size: 14px;
   font-weight: 550;
+  text-decoration: none;
+}
+
+.nav-item:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
 }
 
 .nav-item.is-active {
@@ -232,6 +238,7 @@
     width: 48px;
     justify-content: center;
     padding: 0;
+    text-decoration: none;
   }
 
   .nav-icon {
