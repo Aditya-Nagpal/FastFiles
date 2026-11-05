@@ -415,7 +415,8 @@ func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 	_, err = tx.Exec(ctx, `
 		UPDATE entries
 		SET deleted_at = CURRENT_TIMESTAMP,
-			updated_at = CURRENT_TIMESTAMP
+			updated_at = CURRENT_TIMESTAMP,
+			is_starred = FALSE
 		WHERE id = $1
 			AND user_id = $2
 			AND type = 'FILE'
@@ -549,7 +550,8 @@ func DeleteFolder(ctx context.Context, publicId string, userId int64) error {
 		)
 		UPDATE entries
 		SET deleted_at = $3,
-		    updated_at = $3
+		    updated_at = $3,
+			is_starred = FALSE
 		WHERE id IN (SELECT id FROM descendants)
 		  AND user_id = $2
 		  AND deleted_at IS NULL

@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import type { FileItem, FileSearchMode } from '../../stores/files';
 import FileActionsMenu from './FileActionsMenu.vue';
+import FileStarButton from './FileStarButton.vue';
 
 interface SearchPayload {
     query: string;
@@ -13,6 +14,7 @@ const props = defineProps<{
     total: number;
     isSearching: boolean;
     error: string;
+    updatingStarredIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -21,6 +23,7 @@ const emit = defineEmits<{
     (event: 'download', item: FileItem): void;
     (event: 'open', item: FileItem): void;
     (event: 'delete', item: FileItem): void;
+    (event: 'star', item: FileItem, isStarred: boolean): void;
 }>();
 
 const query = ref('');
@@ -37,6 +40,10 @@ function submitSearch() {
         query: trimmedQuery,
         mode: mode.value,
     });
+}
+
+function handleStarToggle(item: FileItem, isStarred: boolean) {
+    emit('star', item, isStarred);
 }
 
 function clearSearch() {
@@ -149,6 +156,9 @@ function formatFileSize(size?: number | null) {
                             </template>
                         </span>
                     </div>
+
+                    <FileStarButton :item="item" :disabled="props.updatingStarredIds?.includes(item.public_id) ?? false"
+                        @toggle="handleStarToggle" />
 
                     <FileActionsMenu :item="item" @open="emit('open', $event)" @download="emit('download', $event)"
                         @delete="emit('delete', $event)" />

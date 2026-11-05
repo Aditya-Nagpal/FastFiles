@@ -11,6 +11,7 @@ export interface FileItem {
     size?: number | null;
     created_at?: string;
     updated_at?: string;
+    is_starred?: boolean;
 }
 
 interface FileResponse {

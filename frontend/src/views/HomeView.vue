@@ -12,6 +12,7 @@ import AppTopbar from '../components/layout/AppTopbar.vue';
 import AppFooter from '../components/layout/AppFooter.vue';
 import FileInfoModal from '../components/files/FileInfoModal.vue';
 import { useStorageQuotaStore } from '../stores/storageQuota';
+import { useStarredStore } from '../stores/starred';
 import { isAxiosError } from 'axios';
 
 type Theme = 'light' | 'dark';
@@ -38,6 +39,9 @@ const deleteError = ref('');
 const itemForInfo = ref<FileItem | null>(null);
 
 const storageQuota = useStorageQuotaStore();
+
+const starred = useStarredStore();
+const starError = ref('');
 
 function applyTheme(value: Theme) {
   theme.value = value;
@@ -178,6 +182,17 @@ async function handleSearch(payload: {
   }
 }
 
+async function updateStar(item: FileItem, isStarred: boolean) {
+  starError.value = '';
+
+  try {
+    await starred.setStarred(item, isStarred);
+  } catch (error) {
+    console.error('Could not update starred state:', error);
+    starError.value = `Could not ${isStarred ? 'star' : 'unstar'} this item. Please try again.`;
+  }
+}
+
 function refreshStorageQuota() {
   void storageQuota.fetchQuota().catch((error) => {
     console.error('Could not refresh storage quota:', error);
@@ -259,18 +274,23 @@ onMounted(() => {
         </div>
 
         <FileSearch :results="files.searchResults" :total="files.searchTotal" :is-searching="files.isSearching"
-          :error="files.searchError" @search="handleSearch" @clear="clearSearch" @download="downloadFile"
-          @open="openFolder" @delete="requestDelete" />
+          :error="files.searchError" :updating-starred-ids="starred.updatingPublicIds" @search="handleSearch"
+          @clear="clearSearch" @download="downloadFile" @open="openFolder" @delete="requestDelete" @star="updateStar" />
 
         <p v-if="downloadError" class="upload-error" role="alert">
           {{ downloadError }}
         </p>
 
+        <p v-if="starError" class="upload-error" role="alert">
+          {{ starError }}
+        </p>
+
         <section class="workspace-card" aria-label="Your files">
           <FileList :items="files.contents" :total="files.total" :is-loading="files.isLoading"
             :error="files.errorMessage" :current-key="files.currentKey" :can-go-back="files.keyStack.length > 0"
-            :downloading-file-id="downloadingFileId" @back="goBack" @retry="loadContents" @open="openFolder"
-            @download="downloadFile" @delete="requestDelete" @info="showFileInfo" />
+            :downloading-file-id="downloadingFileId" :updating-starred-ids="starred.updatingPublicIds" @back="goBack"
+            @retry="loadContents" @open="openFolder" @download="downloadFile" @delete="requestDelete"
+            @info="showFileInfo" @star="updateStar" />
 
           <CreateFolderModal :open="isFolderModalOpen" :is-creating="isCreatingFolder" :error="folderError"
             @close="closeNewFolderModal" @create="createFolder" />

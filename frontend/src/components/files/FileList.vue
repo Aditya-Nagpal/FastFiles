@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { FileItem } from '../../stores/files';
 import FileActionsMenu from './FileActionsMenu.vue';
+import FileStarButton from './FileStarButton.vue';
 
 const props = defineProps<{
   items: FileItem[];
@@ -10,6 +11,7 @@ const props = defineProps<{
   currentKey: string;
   canGoBack: boolean;
   downloadingFileId: string | null;
+  updatingStarredIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -19,18 +21,18 @@ const emit = defineEmits<{
   (event: 'download', item: FileItem): void;
   (event: 'delete', item: FileItem): void;
   (event: 'info', item: FileItem): void;
+  (event: 'star', item: FileItem, isStarred: boolean): void;
 }>();
+
+function handleStarToggle(item: FileItem, isStarred: boolean) {
+  emit('star', item, isStarred);
+}
 </script>
 
 <template>
   <div class="file-browser">
     <div class="files-toolbar">
-      <button
-        v-if="props.canGoBack"
-        class="back-button"
-        type="button"
-        @click="emit('back')"
-      >
+      <button v-if="props.canGoBack" class="back-button" type="button" @click="emit('back')">
         ← Back
       </button>
 
@@ -63,12 +65,7 @@ const emit = defineEmits<{
     <ul v-else class="file-list">
       <li v-for="item in props.items" :key="item.public_id">
         <div class="file-row">
-          <button
-            v-if="item.type === 'FOLDER'"
-            class="file-main folder-main"
-            type="button"
-            @click="emit('open', item)"
-          >
+          <button v-if="item.type === 'FOLDER'" class="file-main folder-main" type="button" @click="emit('open', item)">
             <span class="file-icon" aria-hidden="true">📁</span>
             <span class="file-name">{{ item.name }}</span>
             <span class="item-kind">Folder</span>
@@ -80,14 +77,12 @@ const emit = defineEmits<{
             <span class="item-kind">File</span>
           </div>
 
-          <FileActionsMenu
-            :item="item"
-            :downloading="props.downloadingFileId === item.public_id"
-            @open="emit('open', $event)"
-            @download="emit('download', $event)"
-            @delete="emit('delete', $event)"
-            @info="emit('info', $event)"
-          />
+          <FileStarButton :item="item" :disabled="props.updatingStarredIds?.includes(item.public_id) ?? false"
+            @toggle="handleStarToggle" />
+
+          <FileActionsMenu :item="item" :downloading="props.downloadingFileId === item.public_id"
+            @open="emit('open', $event)" @download="emit('download', $event)" @delete="emit('delete', $event)"
+            @info="emit('info', $event)" />
         </div>
       </li>
     </ul>

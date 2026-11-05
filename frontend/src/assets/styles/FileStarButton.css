@@ -1,0 +1,39 @@
+.file-star-button {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--color-text-subtle);
+    font-size: 21px;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+        background 150ms ease,
+        color 150ms ease,
+        transform 150ms ease;
+}
+
+.file-star-button:hover:not(:disabled) {
+    background: var(--color-primary-soft);
+    color: var(--color-primary);
+    transform: scale(1.06);
+}
+
+.file-star-button.is-starred {
+    color: #e0a526;
+}
+
+.file-star-button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
+.file-star-button:focus-visible {
+    outline: 3px solid var(--color-primary-soft);
+    outline-offset: 2px;
+}
