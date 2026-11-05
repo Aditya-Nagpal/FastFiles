@@ -11,6 +11,7 @@ import AppSidebar from '../components/layout/AppSidebar.vue';
 import AppTopbar from '../components/layout/AppTopbar.vue';
 import AppFooter from '../components/layout/AppFooter.vue';
 import FileInfoModal from '../components/files/FileInfoModal.vue';
+import { useStorageQuotaStore } from '../stores/storageQuota';
 import { isAxiosError } from 'axios';
 
 type Theme = 'light' | 'dark';
@@ -35,6 +36,8 @@ const isDeleting = ref(false);
 const deleteError = ref('');
 
 const itemForInfo = ref<FileItem | null>(null);
+
+const storageQuota = useStorageQuotaStore();
 
 function applyTheme(value: Theme) {
   theme.value = value;
@@ -103,6 +106,7 @@ async function uploadSelectedFile(file: File) {
 
   try {
     await files.uploadFile(file);
+    refreshStorageQuota();
     isUploadModalOpen.value = false;
   } catch (error) {
     console.error('File upload failed:', error);
@@ -152,6 +156,7 @@ async function confirmDelete() {
 
   try {
     await files.deleteItem(itemToDelete.value.public_id);
+    refreshStorageQuota();
     isDeleteModalOpen.value = false;
     itemToDelete.value = null;
   } catch (error) {
@@ -171,6 +176,12 @@ async function handleSearch(payload: {
   } catch {
     // The store exposes the search error for the component to display.
   }
+}
+
+function refreshStorageQuota() {
+  void storageQuota.fetchQuota().catch((error) => {
+    console.error('Could not refresh storage quota:', error);
+  });
 }
 
 function clearSearch() {
