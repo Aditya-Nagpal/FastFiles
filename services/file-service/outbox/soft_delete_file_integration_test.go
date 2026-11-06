@@ -18,7 +18,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-func TestDeleteFile_PublishesOutboxEvent(t *testing.T) {
+func TestSoftDeleteFile_PublishesOutboxEvent(t *testing.T) {
 	envPath, err := findEnvFile()
 	if err != nil {
 		t.Fatalf("failed to find .env file: %v", err)
@@ -137,24 +137,30 @@ func TestDeleteFile_PublishesOutboxEvent(t *testing.T) {
 		}
 	})
 
-	// Call the actual production deletion function.
-	if err := db.DeleteFile(ctx, publicID, userID); err != nil {
-		t.Fatalf("DeleteFile failed: %v", err)
+	// Call the actual production soft-delete function.
+	if err := db.SoftDeleteFile(ctx, publicID, userID); err != nil {
+		t.Fatalf("SoftDeleteFile failed: %v", err)
 	}
 
 	// Verify that the entry was soft-deleted.
 	var deletedAt sql.NullTime
+	var explicitlyDeleted bool
+
 	err = pool.QueryRow(ctx, `
-		SELECT deleted_at
+		SELECT deleted_at, explicitly_deleted
 		FROM entries
 		WHERE public_id = $1 AND user_id = $2
-	`, publicID, userID).Scan(&deletedAt)
+	`, publicID, userID).Scan(&deletedAt, &explicitlyDeleted)
 
 	if err != nil {
 		t.Fatalf("failed to read deleted entry: %v", err)
 	}
 	if !deletedAt.Valid {
 		t.Fatal("expected entry to be soft-deleted")
+	}
+
+	if !explicitlyDeleted {
+		t.Fatal("expected explicitly_deleted=true")
 	}
 
 	// Verify quota release.
@@ -168,25 +174,25 @@ func TestDeleteFile_PublishesOutboxEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read storage usage: %v", err)
 	}
-	if usedBytes != 0 {
-		t.Fatalf("expected used_bytes=0, got %d", usedBytes)
+	if usedBytes != fileSize {
+		t.Fatalf("expected used_bytes=%d, got %d", fileSize, usedBytes)
 	}
 
-	// Get the event created by DeleteFile's transaction.
+	// Get the event created by SoftDeleteFile's transaction.
 	var eventID string
 	err = pool.QueryRow(ctx, `
 		SELECT event_id
 		FROM outbox_events
 		WHERE aggregate_id = $1
-		  AND event_type = 'FILE_DELETED'
+		  AND event_type = 'FILE_TRASHED'
 	`, publicID).Scan(&eventID)
 
 	if err != nil {
-		t.Fatalf("FILE_DELETED outbox event not found: %v", err)
+		t.Fatalf("FILE_TRASHED outbox event not found: %v", err)
 	}
 
 	// Create an isolated Kafka topic.
-	testTopic := "fastfiles-delete-integration-" + testID
+	testTopic := "fastfiles-trash-integration-" + testID
 	createKafkaTopic(t, brokers, testTopic)
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
@@ -235,8 +241,8 @@ func TestDeleteFile_PublishesOutboxEvent(t *testing.T) {
 			continue
 		}
 
-		if event.EventType != events.EventFileDeleted {
-			t.Fatalf("expected FILE_DELETED, got %s", event.EventType)
+		if event.EventType != events.EventFileTrashed {
+			t.Fatalf("expected FILE_TRASHED, got %s", event.EventType)
 		}
 		if event.PublicID != publicID {
 			t.Fatalf("expected public ID %s, got %s", publicID, event.PublicID)
@@ -279,7 +285,7 @@ func TestDeleteFile_PublishesOutboxEvent(t *testing.T) {
 	}
 
 	t.Logf(
-		"SUCCESS: DeleteFile soft-deleted file, released quota, created outbox event %s, and publisher delivered it to Kafka",
+		"SUCCESS: SoftDeleteFile soft-deleted file, preserved quota, created FILE_TRASHED outbox event %s, and publisher delivered it to Kafka",
 		eventID,
 	)
 }

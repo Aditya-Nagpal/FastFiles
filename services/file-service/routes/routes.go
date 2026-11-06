@@ -12,6 +12,8 @@ func SetupRoutes(r *gin.Engine, s3Uploader *utils.S3Uploader, taskService *tasks
 	r.GET("/list", handlers.ListFilesByParentId())
 	r.POST("/upload", handlers.Upload(s3Uploader, taskService))
 	r.DELETE("/delete/:id", handlers.DeleteContent(s3Uploader))
+	r.PATCH("/trash/:id", handlers.HandleSendToTrash())
+	r.GET("/trash", handlers.GetTrash())
 	r.GET("/download/:id", handlers.DownloadFile(s3Uploader))
 	r.POST("/search/named", handlers.HandleNamedSearch())
 	r.POST("/search/smart", handlers.HandleSmartSearch())

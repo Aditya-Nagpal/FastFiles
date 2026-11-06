@@ -117,11 +117,7 @@ func CreateStorageReservation(ctx context.Context, userID int64, sizeBytes int64
 }
 
 // RenewStorageReservation extends the lease of a pending reservation.
-func RenewStorageReservation(
-	ctx context.Context,
-	reservationID int64,
-	leaseDuration time.Duration,
-) error {
+func RenewStorageReservation(ctx context.Context, reservationID int64, leaseDuration time.Duration) error {
 	if leaseDuration <= 0 {
 		return fmt.Errorf("lease duration must be positive")
 	}
@@ -389,10 +385,7 @@ func FinalizeStorageReservationUsingTransaction(
 //
 // FOR UPDATE SKIP LOCKED allows multiple recovery workers to process
 // different reservations concurrently without processing the same row.
-func RecoverExpiredStorageReservations(
-	ctx context.Context,
-	batchSize int,
-) (int, error) {
+func RecoverExpiredStorageReservations(ctx context.Context, batchSize int) (int, error) {
 	if batchSize <= 0 {
 		return 0, fmt.Errorf("batch size must be positive")
 	}

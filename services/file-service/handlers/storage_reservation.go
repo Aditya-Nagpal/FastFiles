@@ -22,10 +22,7 @@ type reservationRenewFunc func(
 	leaseDuration time.Duration,
 ) error
 
-func StartStorageReservationHeartbeat(
-	parentCtx context.Context,
-	reservationID int64,
-) (context.Context, func() error) {
+func StartStorageReservationHeartbeat(parentCtx context.Context, reservationID int64) (context.Context, func() error) {
 	return StartStorageReservationHeartbeatWith(
 		parentCtx,
 		reservationID,

@@ -311,6 +311,93 @@ func DeleteContent(uploader *utils.S3Uploader) gin.HandlerFunc {
 	}
 }
 
+func HandleSendToTrash() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userId, err := httputils.GetUserIdHeader(c)
+		if httputils.HandleUserIdHeaderError(c, err) {
+			return
+		}
+
+		publicId := c.Param("id")
+
+		entityType, err := db.GetEntityType(c.Request.Context(), publicId, userId)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to get entity type"})
+			return
+		}
+
+		if entityType == "" {
+			c.JSON(http.StatusNotFound, gin.H{"message": "File or folder not found"})
+			return
+		}
+
+		switch entityType {
+		case "file":
+			err = db.SoftDeleteFile(c.Request.Context(), publicId, userId)
+
+		case "folder":
+			err = db.SoftDeleteFolder(c.Request.Context(), publicId, userId)
+
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid entity type"})
+			return
+		}
+
+		if err != nil {
+			if errors.Is(err, db.ErrEntryNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"message": "File or folder not found"})
+				return
+			}
+
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to move file or folder to trash", "error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Moved to trash successfully"})
+	}
+}
+
+func GetTrash() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := httputils.GetUserIdHeader(c)
+		if httputils.HandleUserIdHeaderError(c, err) {
+			return
+		}
+
+		var parentID *int64
+
+		publicParentID := c.Query("parentId")
+
+		ctx := c.Request.Context()
+
+		if publicParentID != "" {
+			internalParentID, err := db.GetTrashedFolderInternalID(ctx, publicParentID, userID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to find trashed folder", "error": err.Error()})
+				return
+			}
+
+			if internalParentID == nil {
+				c.JSON(http.StatusNotFound, gin.H{"message": "Trashed folder not found"})
+				return
+			}
+
+			parentID = internalParentID
+		}
+
+		results, total, err := db.GetTrashEntries(ctx, userID, parentID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch trash", "error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"total":   total,
+			"results": results,
+		})
+	}
+}
+
 func DownloadFile(uploader *utils.S3Uploader) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userId, err := httputils.GetUserIdHeader(c)

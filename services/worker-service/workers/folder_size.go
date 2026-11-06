@@ -20,8 +20,8 @@ func HandleFolderSizeEvent(ctx context.Context, message []byte) error {
 
 	switch event.EventType {
 	case events.EventFileCreated,
-		events.EventFileDeleted,
-		events.EventFolderDeleted:
+		events.EventFileTrashed,
+		events.EventFolderTrashed:
 		// These events can change ancestor folder sizes.
 	default:
 		return nil

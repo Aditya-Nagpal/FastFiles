@@ -366,6 +366,7 @@ func LockEntryHierarchy(
 	return nil
 }
 
+// Will delete later
 func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 	tx, err := DB.Begin(ctx)
 	if err != nil {
@@ -472,6 +473,7 @@ func DeleteFile(ctx context.Context, publicId string, userId int64) error {
 	return nil
 }
 
+// Will delete later
 func DeleteFolder(ctx context.Context, publicId string, userId int64) error {
 	tx, err := DB.Begin(ctx)
 	if err != nil {
@@ -596,6 +598,218 @@ func DeleteFolder(ctx context.Context, publicId string, userId int64) error {
 	return nil
 }
 
+func SoftDeleteFile(ctx context.Context, publicId string, userId int64) error {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Find the active file before acquiring hierarchy locks.
+	var (
+		entryID  int64
+		parentID sql.NullInt64
+		name     string
+		fileSize int64
+	)
+
+	err = tx.QueryRow(ctx, `
+		SELECT id, parent_id, name, size
+		FROM entries
+		WHERE public_id = $1
+			AND user_id = $2
+			AND type = 'FILE'
+			AND deleted_at IS NULL
+	`, publicId, userId).Scan(&entryID, &parentID, &name, &fileSize)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrEntryNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to find file: %w", err)
+	}
+
+	// Lock the parent hierarchy first, then lock the file itself.
+	if parentID.Valid {
+		err = LockEntryHierarchy(tx, ctx, userId, parentID.Int64, "FOLDER", false)
+		if err != nil {
+			return fmt.Errorf("failed to lock parent hierarchy: %w", err)
+		}
+	}
+
+	err = LockEntryHierarchy(tx, ctx, userId, entryID, "FILE", true)
+	if err != nil {
+		return fmt.Errorf("failed to lock file hierarchy: %w", err)
+	}
+
+	// Move the file to Trash without releasing its storage quota.
+	_, err = tx.Exec(ctx, `
+		UPDATE entries
+		SET deleted_at = CURRENT_TIMESTAMP,
+			updated_at = CURRENT_TIMESTAMP,
+			is_starred = FALSE,
+			explicitly_deleted = TRUE
+		WHERE id = $1
+			AND user_id = $2
+			AND type = 'FILE'
+			AND deleted_at IS NULL
+	`, entryID, userId)
+
+	if err != nil {
+		return fmt.Errorf("failed to move file to trash: %w", err)
+	}
+
+	// Prepare parent ID for the event payload.
+	var parentPtr *int64
+	if parentID.Valid {
+		parentPtr = &parentID.Int64
+	}
+
+	// Insert FILE_TRASHED outbox event.
+	eventID := uuid.NewString()
+	payload, err := json.Marshal(events.EntryEvent{
+		EventID:     eventID,
+		EventType:   events.EventFileTrashed,
+		AggregateID: publicId,
+		UserID:      userId,
+		EntryID:     entryID,
+		PublicID:    publicId,
+		ParentID:    parentPtr,
+		Name:        name,
+		EntryType:   "FILE",
+		Size:        fileSize,
+		CreatedAt:   time.Now().UTC(),
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to marshal file trashed event: %w", err)
+	}
+
+	if err := InsertOutboxEvent(
+		tx,
+		ctx,
+		eventID,
+		payload,
+		"ENTRY",
+		publicId,
+		events.EventFileTrashed,
+	); err != nil {
+		return fmt.Errorf("failed to insert file trashed event: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit file trash operation: %w", err)
+	}
+
+	return nil
+}
+
+func SoftDeleteFolder(ctx context.Context, publicId string, userId int64) error {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Find the active folder first.
+	var folderID int64
+
+	err = tx.QueryRow(ctx, `
+		SELECT id
+		FROM entries
+		WHERE public_id = $1
+		  AND user_id = $2
+		  AND type = 'FOLDER'
+		  AND deleted_at IS NULL
+	`, publicId, userId).Scan(&folderID)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrEntryNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to find folder: %w", err)
+	}
+
+	// Lock ancestors first, then exclusively lock the target folder.
+	err = LockEntryHierarchy(tx, ctx, userId, folderID, "FOLDER", true)
+	if err != nil {
+		return fmt.Errorf("failed to lock folder hierarchy: %w", err)
+	}
+
+	now := time.Now().UTC()
+
+	// Soft-delete the root folder and all currently active descendants.
+	// Only the root is explicitly deleted. Existing flags on descendants
+	// are preserved, including independently trashed descendants.
+	_, err = tx.Exec(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT id
+			FROM entries
+			WHERE id = $1
+			  AND user_id = $2
+			  AND deleted_at IS NULL
+
+			UNION ALL
+
+			SELECT e.id
+			FROM entries e
+			JOIN descendants d ON e.parent_id = d.id
+			WHERE e.user_id = $2
+			  AND e.deleted_at IS NULL
+		)
+		UPDATE entries
+		SET deleted_at = $3,
+		    updated_at = $3,
+		    is_starred = FALSE,
+		    explicitly_deleted = CASE
+		        WHEN id = $1 THEN TRUE
+		        ELSE explicitly_deleted
+		    END
+		WHERE id IN (SELECT id FROM descendants)
+		  AND user_id = $2
+		  AND deleted_at IS NULL
+	`, folderID, userId, now)
+
+	if err != nil {
+		return fmt.Errorf("failed to move folder contents to trash: %w", err)
+	}
+
+	// Insert FOLDER_TRASHED outbox event.
+	eventID := uuid.NewString()
+	payload, err := json.Marshal(events.EntryEvent{
+		EventID:     eventID,
+		EventType:   events.EventFolderTrashed,
+		AggregateID: publicId,
+		UserID:      userId,
+		EntryID:     folderID,
+		PublicID:    publicId,
+		EntryType:   "FOLDER",
+		CreatedAt:   now,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to marshal folder trashed event: %w", err)
+	}
+
+	if err := InsertOutboxEvent(
+		tx,
+		ctx,
+		eventID,
+		payload,
+		"ENTRY",
+		publicId,
+		events.EventFolderTrashed,
+	); err != nil {
+		return fmt.Errorf("failed to insert folder trashed event: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit folder trash operation: %w", err)
+	}
+
+	return nil
+}
+
 func GetDownloadFile(ctx context.Context, publicId string, userId int64) (*models.DownloadFile, error) {
 	query := `SELECT name, extension, type, s3_key FROM entries WHERE public_id = $1 AND user_id = $2`
 
@@ -687,4 +901,163 @@ func GetStarredEntries(ctx context.Context, userID int64, limit int, offset int)
 	}
 
 	return results, nil
+}
+
+func GetTrashEntries(ctx context.Context, userID int64, parentID *int64) ([]models.ListFileResponse, int, error) {
+	var (
+		query string
+		args  []any
+	)
+
+	if parentID == nil {
+		// Virtual Trash root: only explicitly trashed entries
+		// that do not have an explicitly trashed ancestor.
+		query = `
+            WITH RECURSIVE ancestors AS (
+                SELECT
+                    e.id,
+                    e.parent_id,
+                    e.explicitly_deleted
+                FROM entries e
+                WHERE e.user_id = $1
+                  AND e.deleted_at IS NOT NULL
+                  AND e.explicitly_deleted = TRUE
+
+                UNION ALL
+
+                SELECT
+                    child.id,
+                    child.parent_id,
+                    child.explicitly_deleted
+                FROM entries child
+                JOIN ancestors a ON child.id = a.parent_id
+                WHERE child.user_id = $1
+            )
+            SELECT
+                e.public_id,
+                e.name,
+                e.type,
+                e.content_type,
+                e.extension,
+                e.size,
+                e.created_at,
+                e.updated_at,
+                e.is_starred,
+                COUNT(*) OVER() AS total
+            FROM entries e
+            WHERE e.user_id = $1
+              AND e.deleted_at IS NOT NULL
+              AND e.explicitly_deleted = TRUE
+              AND NOT EXISTS (
+                  WITH RECURSIVE parent_chain AS (
+                      SELECT
+                          p.id,
+                          p.parent_id,
+                          p.explicitly_deleted
+                      FROM entries p
+                      WHERE p.id = e.parent_id
+                        AND p.user_id = $1
+
+                      UNION ALL
+
+                      SELECT
+                          p.id,
+                          p.parent_id,
+                          p.explicitly_deleted
+                      FROM entries p
+                      JOIN parent_chain pc ON p.id = pc.parent_id
+                      WHERE p.user_id = $1
+                  )
+                  SELECT 1
+                  FROM parent_chain
+                  WHERE explicitly_deleted = TRUE
+              )
+            ORDER BY e.type DESC, e.updated_at DESC
+        `
+		args = []any{userID}
+	} else {
+		// Contents of a trashed folder.
+		query = `
+            SELECT
+                e.public_id,
+                e.name,
+                e.type,
+                e.content_type,
+                e.extension,
+                e.size,
+                e.created_at,
+                e.updated_at,
+                e.is_starred,
+                COUNT(*) OVER() AS total
+            FROM entries e
+            WHERE e.user_id = $1
+              AND e.parent_id = $2
+              AND e.deleted_at IS NOT NULL
+            ORDER BY e.type DESC, e.updated_at DESC
+        `
+		args = []any{userID, *parentID}
+	}
+
+	rows, err := DB.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	results := make([]models.ListFileResponse, 0)
+	total := 0
+
+	for rows.Next() {
+		var item models.ListFileResponse
+
+		if err := rows.Scan(
+			&item.PublicId,
+			&item.Name,
+			&item.Type,
+			&item.ContentType,
+			&item.Extension,
+			&item.Size,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+			&item.IsStarred,
+			&total,
+		); err != nil {
+			return nil, 0, err
+		}
+
+		if item.Extension != "" {
+			item.Name += "." + item.Extension
+		}
+
+		results = append(results, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return results, total, nil
+}
+
+func GetTrashedFolderInternalID(ctx context.Context, publicID string, userID int64) (*int64, error) {
+	query := `
+        SELECT id
+        FROM entries
+        WHERE public_id = $1
+          AND user_id = $2
+          AND type = 'FOLDER'
+          AND deleted_at IS NOT NULL
+    `
+
+	var internalID int64
+
+	err := DB.QueryRow(ctx, query, publicID, userID).Scan(&internalID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &internalID, nil
 }
