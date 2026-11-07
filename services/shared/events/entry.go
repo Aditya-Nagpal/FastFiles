@@ -10,6 +10,9 @@ const (
 
 	EventFileTrashed   = "FILE_TRASHED"
 	EventFolderTrashed = "FOLDER_TRASHED"
+
+	EventFileRestored   = "FILE_RESTORED"
+	EventFolderRestored = "FOLDER_RESTORED"
 )
 
 type EntryEvent struct {

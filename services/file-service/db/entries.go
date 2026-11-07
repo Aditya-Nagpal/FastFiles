@@ -41,6 +41,27 @@ func GetEntityType(ctx context.Context, publicId string, userId int64) (string, 
 	return strings.ToLower(entityType), nil
 }
 
+func GetTrashedEntityType(ctx context.Context, publicID string, userID int64) (string, error) {
+	var entityType string
+
+	err := DB.QueryRow(ctx, `
+		SELECT type
+		FROM entries
+		WHERE public_id = $1
+		  AND user_id = $2
+		  AND deleted_at IS NOT NULL
+	`, publicID, userID).Scan(&entityType)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrEntryNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to get trashed entity type: %w", err)
+	}
+
+	return entityType, nil
+}
+
 func GetFilesByParentId(ctx context.Context, userId int64, internalParentID *int64) ([]models.ListFileResponse, error) {
 	query := `
 		SELECT
@@ -342,6 +363,153 @@ func LockEntryHierarchy(
                 WHERE id = $1
                   AND user_id = $2
                   AND deleted_at IS NULL
+                FOR UPDATE
+            `, entry.id, userID).Scan(&lockedID)
+		} else {
+			err = tx.QueryRow(ctx, `
+                SELECT id
+                FROM entries
+                WHERE id = $1
+                  AND user_id = $2
+                  AND deleted_at IS NULL
+                FOR SHARE
+            `, entry.id, userID).Scan(&lockedID)
+		}
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrEntryNotFound
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func LockTrashedEntryHierarchy(
+	tx pgx.Tx,
+	ctx context.Context,
+	userID int64,
+	entryID int64,
+	expectedTargetType string,
+) error {
+	rows, err := tx.Query(ctx, `
+        WITH RECURSIVE ancestors AS (
+            SELECT
+                id,
+                user_id,
+                parent_id,
+                type,
+                deleted_at,
+                ARRAY[id]::BIGINT[] AS path
+            FROM entries
+            WHERE id = $1
+              AND user_id = $2
+
+            UNION ALL
+
+            SELECT
+                p.id,
+                p.user_id,
+                p.parent_id,
+                p.type,
+                p.deleted_at,
+                a.path || p.id
+            FROM entries p
+            JOIN ancestors a ON a.parent_id = p.id
+            WHERE p.user_id = $2
+              AND NOT p.id = ANY(a.path)
+        )
+        SELECT id, parent_id, type, deleted_at
+        FROM ancestors
+        ORDER BY cardinality(path) DESC
+    `, entryID, userID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type hierarchyEntry struct {
+		id        int64
+		parentID  *int64
+		entryType string
+		deletedAt sql.NullTime
+	}
+
+	var hierarchy []hierarchyEntry
+
+	for rows.Next() {
+		var entry hierarchyEntry
+
+		if err := rows.Scan(
+			&entry.id,
+			&entry.parentID,
+			&entry.entryType,
+			&entry.deletedAt,
+		); err != nil {
+			return err
+		}
+
+		hierarchy = append(hierarchy, entry)
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(hierarchy) == 0 {
+		return ErrEntryNotFound
+	}
+
+	target := hierarchy[len(hierarchy)-1]
+
+	if target.id != entryID || target.entryType != expectedTargetType {
+		return ErrInvalidEntryHierarchy
+	}
+
+	// The target must be trashed, but all its ancestors must be active.
+	for i, entry := range hierarchy {
+		if i == len(hierarchy)-1 {
+			if !entry.deletedAt.Valid {
+				return ErrEntryNotFound
+			}
+			continue
+		}
+
+		if entry.deletedAt.Valid {
+			return ErrEntryNotFound
+		}
+
+		if i == 0 {
+			if entry.parentID != nil {
+				return ErrInvalidEntryHierarchy
+			}
+			continue
+		}
+
+		parent := hierarchy[i-1]
+
+		if entry.parentID == nil || *entry.parentID != parent.id {
+			return ErrInvalidEntryHierarchy
+		}
+
+		if parent.entryType != "FOLDER" {
+			return ErrInvalidEntryHierarchy
+		}
+	}
+
+	// Lock active ancestors first, then the trashed target.
+	for i, entry := range hierarchy {
+		var lockedID int64
+
+		if i == len(hierarchy)-1 {
+			err = tx.QueryRow(ctx, `
+                SELECT id
+                FROM entries
+                WHERE id = $1
+                  AND user_id = $2
+                  AND deleted_at IS NOT NULL
                 FOR UPDATE
             `, entry.id, userID).Scan(&lockedID)
 		} else {
@@ -1060,4 +1228,255 @@ func GetTrashedFolderInternalID(ctx context.Context, publicID string, userID int
 	}
 
 	return &internalID, nil
+}
+
+func RestoreFile(ctx context.Context, publicId string, userId int64) error {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		entryID  int64
+		parentID sql.NullInt64
+		name     string
+		fileSize int64
+	)
+
+	// Find the trashed file.
+	err = tx.QueryRow(ctx, `
+		SELECT id, parent_id, name, size
+		FROM entries
+		WHERE public_id = $1
+		  AND user_id = $2
+		  AND type = 'FILE'
+		  AND deleted_at IS NOT NULL
+	`, publicId, userId).Scan(
+		&entryID,
+		&parentID,
+		&name,
+		&fileSize,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrEntryNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to find trashed file: %w", err)
+	}
+
+	// Lock the trashed file and validate its complete hierarchy.
+	// This also verifies that all its parent folders are active.
+	err = LockTrashedEntryHierarchy(
+		tx,
+		ctx,
+		userId,
+		entryID,
+		"FILE",
+	)
+	if err != nil {
+		return fmt.Errorf("failed to lock trashed file hierarchy: %w", err)
+	}
+
+	// Restore the file without changing its original parent or quota.
+	result, err := tx.Exec(ctx, `
+		UPDATE entries
+		SET deleted_at = NULL,
+		    updated_at = CURRENT_TIMESTAMP,
+		    explicitly_deleted = FALSE
+		WHERE id = $1
+		  AND user_id = $2
+		  AND type = 'FILE'
+		  AND deleted_at IS NOT NULL
+	`, entryID, userId)
+
+	if err != nil {
+		return fmt.Errorf("failed to restore file: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+
+	var parentPtr *int64
+	if parentID.Valid {
+		parentPtr = &parentID.Int64
+	}
+
+	// Insert FILE_RESTORED outbox event.
+	eventID := uuid.NewString()
+
+	payload, err := json.Marshal(events.EntryEvent{
+		EventID:     eventID,
+		EventType:   events.EventFileRestored,
+		AggregateID: publicId,
+		UserID:      userId,
+		EntryID:     entryID,
+		PublicID:    publicId,
+		ParentID:    parentPtr,
+		Name:        name,
+		EntryType:   "FILE",
+		Size:        fileSize,
+		CreatedAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal file restored event: %w", err)
+	}
+
+	if err := InsertOutboxEvent(
+		tx,
+		ctx,
+		eventID,
+		payload,
+		"ENTRY",
+		publicId,
+		events.EventFileRestored,
+	); err != nil {
+		return fmt.Errorf("failed to insert file restored event: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit file restore operation: %w", err)
+	}
+
+	return nil
+}
+
+func RestoreFolder(ctx context.Context, publicId string, userId int64) error {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		folderID int64
+		parentID sql.NullInt64
+		name     string
+	)
+
+	// Find the trashed folder.
+	err = tx.QueryRow(ctx, `
+		SELECT id, parent_id, name
+		FROM entries
+		WHERE public_id = $1
+		  AND user_id = $2
+		  AND type = 'FOLDER'
+		  AND deleted_at IS NOT NULL
+	`, publicId, userId).Scan(
+		&folderID,
+		&parentID,
+		&name,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrEntryNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to find trashed folder: %w", err)
+	}
+
+	// Lock the trashed folder and validate its parent hierarchy.
+	// All ancestors must be active before this folder can be restored.
+	err = LockTrashedEntryHierarchy(
+		tx,
+		ctx,
+		userId,
+		folderID,
+		"FOLDER",
+	)
+	if err != nil {
+		return fmt.Errorf("failed to lock trashed folder hierarchy: %w", err)
+	}
+
+	// Restore the folder and its implicitly trashed descendants.
+	// Independently trashed descendants (explicitly_deleted = TRUE)
+	// and their subtrees remain in Trash.
+	result, err := tx.Exec(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT
+				id,
+				explicitly_deleted,
+				0 AS depth
+			FROM entries
+			WHERE id = $1
+			  AND user_id = $2
+			  AND deleted_at IS NOT NULL
+
+			UNION ALL
+
+			SELECT
+				e.id,
+				e.explicitly_deleted,
+				d.depth + 1
+			FROM entries e
+			JOIN descendants d ON e.parent_id = d.id
+			WHERE e.user_id = $2
+			  AND e.deleted_at IS NOT NULL
+			  AND (d.depth = 0 OR d.explicitly_deleted = FALSE)
+		)
+		UPDATE entries
+		SET deleted_at = NULL,
+		    updated_at = CURRENT_TIMESTAMP,
+		    explicitly_deleted = FALSE
+		WHERE id IN (
+			SELECT id
+			FROM descendants
+			WHERE depth = 0 OR explicitly_deleted = FALSE
+		)
+		  AND user_id = $2
+		  AND deleted_at IS NOT NULL
+	`, folderID, userId)
+
+	if err != nil {
+		return fmt.Errorf("failed to restore folder and descendants: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+
+	var parentPtr *int64
+	if parentID.Valid {
+		parentPtr = &parentID.Int64
+	}
+
+	// Insert FOLDER_RESTORED outbox event.
+	eventID := uuid.NewString()
+
+	payload, err := json.Marshal(events.EntryEvent{
+		EventID:     eventID,
+		EventType:   events.EventFolderRestored,
+		AggregateID: publicId,
+		UserID:      userId,
+		EntryID:     folderID,
+		PublicID:    publicId,
+		ParentID:    parentPtr,
+		Name:        name,
+		EntryType:   "FOLDER",
+		Size:        0,
+		CreatedAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal folder restored event: %w", err)
+	}
+
+	if err := InsertOutboxEvent(
+		tx,
+		ctx,
+		eventID,
+		payload,
+		"ENTRY",
+		publicId,
+		events.EventFolderRestored,
+	); err != nil {
+		return fmt.Errorf("failed to insert folder restored event: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit folder restore operation: %w", err)
+	}
+
+	return nil
 }

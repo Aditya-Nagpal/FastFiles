@@ -311,7 +311,7 @@ func DeleteContent(uploader *utils.S3Uploader) gin.HandlerFunc {
 	}
 }
 
-func HandleSendToTrash() gin.HandlerFunc {
+func MoveToTrash() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userId, err := httputils.GetUserIdHeader(c)
 		if httputils.HandleUserIdHeaderError(c, err) {
@@ -357,47 +357,6 @@ func HandleSendToTrash() gin.HandlerFunc {
 	}
 }
 
-func GetTrash() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		userID, err := httputils.GetUserIdHeader(c)
-		if httputils.HandleUserIdHeaderError(c, err) {
-			return
-		}
-
-		var parentID *int64
-
-		publicParentID := c.Query("parentId")
-
-		ctx := c.Request.Context()
-
-		if publicParentID != "" {
-			internalParentID, err := db.GetTrashedFolderInternalID(ctx, publicParentID, userID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to find trashed folder", "error": err.Error()})
-				return
-			}
-
-			if internalParentID == nil {
-				c.JSON(http.StatusNotFound, gin.H{"message": "Trashed folder not found"})
-				return
-			}
-
-			parentID = internalParentID
-		}
-
-		results, total, err := db.GetTrashEntries(ctx, userID, parentID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch trash", "error": err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"total":   total,
-			"results": results,
-		})
-	}
-}
-
 func DownloadFile(uploader *utils.S3Uploader) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userId, err := httputils.GetUserIdHeader(c)
@@ -433,5 +392,101 @@ func DownloadFile(uploader *utils.S3Uploader) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{"downloadURL": url})
+	}
+}
+
+func GetTrash() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := httputils.GetUserIdHeader(c)
+		if httputils.HandleUserIdHeaderError(c, err) {
+			return
+		}
+
+		var parentID *int64
+
+		publicParentID := c.Query("parent_id")
+
+		ctx := c.Request.Context()
+
+		if publicParentID != "" {
+			internalParentID, err := db.GetTrashedFolderInternalID(ctx, publicParentID, userID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to find trashed folder", "error": err.Error()})
+				return
+			}
+
+			if internalParentID == nil {
+				c.JSON(http.StatusNotFound, gin.H{"message": "Trashed folder not found"})
+				return
+			}
+
+			parentID = internalParentID
+		}
+
+		results, total, err := db.GetTrashEntries(ctx, userID, parentID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch trash", "error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"total":   total,
+			"results": results,
+		})
+	}
+}
+
+func Restore() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := httputils.GetUserIdHeader(c)
+		if httputils.HandleUserIdHeaderError(c, err) {
+			return
+		}
+
+		publicID := c.Param("id")
+		if publicID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Public ID is required"})
+			return
+		}
+
+		// Identify entity type.
+		entityType, err := db.GetTrashedEntityType(c.Request.Context(), publicID, userID)
+		if err != nil {
+			if errors.Is(err, db.ErrEntryNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"message": "Trashed item not found"})
+				return
+			}
+
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to identify entity type", "error": err.Error()})
+			return
+		}
+
+		// Restore according to entity type.
+		switch entityType {
+		case "FILE":
+			err = db.RestoreFile(c.Request.Context(), publicID, userID)
+
+		case "FOLDER":
+			err = db.RestoreFolder(c.Request.Context(), publicID, userID)
+
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid entity type"})
+			return
+		}
+
+		if err != nil {
+			if errors.Is(err, db.ErrEntryNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"message": "Item not found or its parent folder is still in trash"})
+				return
+			}
+
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to restore item", "error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message":  "Item restored successfully",
+			"publicId": publicID,
+		})
 	}
 }
