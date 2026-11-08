@@ -31,7 +31,7 @@
   z-index: 5;
   top: 40px;
   right: 0;
-  min-width: 150px;
+  min-width: 174px;
   padding: 5px;
   border: 1px solid var(--color-border);
   border-radius: 11px;
@@ -40,8 +40,13 @@
 }
 
 .file-actions-menu button {
+  display: flex;
   width: 100%;
-  padding: 9px 10px;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 10px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -52,7 +57,7 @@
   cursor: pointer;
 }
 
-.file-actions-menu button:hover {
+.file-actions-menu button:hover:not(:disabled) {
   background: var(--color-surface-hover);
 }
 
@@ -61,10 +66,20 @@
   opacity: 0.6;
 }
 
+.file-action-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .file-actions-menu .danger-menu-item {
   color: #b42318;
 }
 
-.file-actions-menu .danger-menu-item:hover {
+.file-actions-menu .danger-menu-item:hover:not(:disabled) {
   background: rgb(180 35 24 / 8%);
 }

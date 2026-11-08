@@ -70,7 +70,14 @@ async function signOut() {
           <span>Starred</span>
         </RouterLink>
         <RouterLink class="nav-item" to="/trash" exact-active-class="is-active">
-          <span class="nav-icon">▱</span>
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M4 7h16" />
+              <path d="M9 7V4h6v3" />
+              <path d="m6 7 1 13h10l1-13" />
+              <path d="M10 11v5M14 11v5" />
+            </svg>
+          </span>
           <span>Trash</span>
         </RouterLink>
       </nav>

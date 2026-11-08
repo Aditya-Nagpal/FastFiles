@@ -86,26 +86,50 @@ onBeforeUnmount(() => {
     <div class="file-actions-menu">
       <template v-if="props.variant === 'trash'">
         <button type="button" :disabled="props.restoring" @click="restoreItem">
-          {{ props.restoring ? 'Restoring…' : 'Restore' }}
+          <span>{{ props.restoring ? 'Restoring…' : 'Restore' }}</span>
+          <svg class="file-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 10a8 8 0 1 1 2.3 5.7" />
+            <path d="M4 4v6h6" />
+          </svg>
         </button>
       </template>
 
       <template v-else>
         <button v-if="props.item.type === 'FOLDER'" type="button" @click="openFolder">
-          Open folder
+          <span>Open folder</span>
+          <svg class="file-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M3.5 6.5h6l2 2H20a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-10a1 1 0 0 1 .5-1Z" />
+            <path d="M3.5 10h17" />
+          </svg>
         </button>
 
         <button v-else type="button" :disabled="props.downloading" @click="downloadFile">
-          {{ props.downloading ? 'Preparing…' : 'Download' }}
+          <span>{{ props.downloading ? 'Preparing…' : 'Download' }}</span>
+          <svg class="file-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3v11" />
+            <path d="m8 10 4 4 4-4" />
+            <path d="M5 17v3h14v-3" />
+          </svg>
         </button>
 
         <button class="danger-menu-item" type="button" @click="moveToTrash">
-          Move to trash
+          <span>Move to trash</span>
+          <svg class="file-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 7h16" />
+            <path d="M9 7V4h6v3" />
+            <path d="m6 7 1 13h10l1-13" />
+            <path d="M10 11v5M14 11v5" />
+          </svg>
         </button>
       </template>
 
       <button type="button" @click="showInfo">
-        Information
+        <span>Information</span>
+        <svg class="file-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v5" />
+          <path d="M12 8h.01" />
+        </svg>
       </button>
     </div>
   </details>
