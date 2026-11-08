@@ -89,20 +89,38 @@ func Upload(uploader *utils.S3Uploader, taskService *tasks.TaskService) gin.Hand
 		case "file":
 			err = UploadFile(c, uploader, taskService, userId, publicId, internalParentID)
 			if err != nil {
+				if errors.Is(err, db.ErrEntryNotFound) {
+					c.JSON(http.StatusNotFound, gin.H{"message": "Parent directory not found"})
+					return
+				}
+
+				if errors.Is(err, http.ErrMissingFile) {
+					c.JSON(http.StatusBadRequest, gin.H{"message": "File is required"})
+					return
+				}
+
 				c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to upload file", "error": err.Error()})
 				return
 			}
+
 		case "folder":
 			name := c.Request.FormValue("name")
 			if name == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"message": "Folder name is required"})
 				return
 			}
+
 			err = UploadFolder(c, userId, publicId, name, internalParentID)
 			if err != nil {
+				if errors.Is(err, db.ErrEntryNotFound) {
+					c.JSON(http.StatusNotFound, gin.H{"message": "Parent directory not found"})
+					return
+				}
+
 				c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to upload folder", "error": err.Error()})
 				return
 			}
+
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid entityType, must be 'file' or 'folder'"})
 			return
@@ -371,6 +389,8 @@ func DownloadFile(uploader *utils.S3Uploader) gin.HandlerFunc {
 		}
 
 		file, err := db.GetDownloadFile(c.Request.Context(), publicID, userId)
+		log.Print((file == nil))
+		log.Print((err))
 		if file == nil && err == nil {
 			c.JSON(http.StatusNotFound, gin.H{"message": "File not found"})
 			return

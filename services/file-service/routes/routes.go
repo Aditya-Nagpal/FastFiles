@@ -14,11 +14,11 @@ func SetupRoutes(r *gin.Engine, s3Uploader *utils.S3Uploader, taskService *tasks
 	r.DELETE("/delete/:id", handlers.DeleteContent(s3Uploader))
 	r.PATCH("/trash/:id", handlers.MoveToTrash())
 	r.GET("/trash", handlers.GetTrash())
+	r.PATCH("/trash/restore/:id", handlers.Restore())
 	r.GET("/download/:id", handlers.DownloadFile(s3Uploader))
 	r.POST("/search/named", handlers.HandleNamedSearch())
 	r.POST("/search/smart", handlers.HandleSmartSearch())
 	r.GET("/storage/quota", handlers.GetStorageQuota())
 	r.PATCH("/starred/:id", handlers.HandleUpdateStarred())
 	r.GET("/starred", handlers.HandleGetStarredEntries())
-	r.POST("/restore/:id", handlers.Restore())
 }

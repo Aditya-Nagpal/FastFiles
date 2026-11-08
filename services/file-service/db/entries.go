@@ -979,11 +979,11 @@ func SoftDeleteFolder(ctx context.Context, publicId string, userId int64) error 
 }
 
 func GetDownloadFile(ctx context.Context, publicId string, userId int64) (*models.DownloadFile, error) {
-	query := `SELECT name, extension, type, s3_key FROM entries WHERE public_id = $1 AND user_id = $2`
+	query := `SELECT name, extension, type, s3_key FROM entries WHERE public_id = $1 AND user_id = $2 AND type = $3`
 
 	var file models.DownloadFile
 
-	err := DB.QueryRow(ctx, query, publicId, userId).Scan(&file.Name, &file.Extension, &file.Type, &file.S3Key)
+	err := DB.QueryRow(ctx, query, publicId, userId, "FILE").Scan(&file.Name, &file.Extension, &file.Type, &file.S3Key)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
