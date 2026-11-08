@@ -15,10 +15,13 @@ const props = withDefaults(
     updatingStarredIds?: string[];
     emptyTitle?: string;
     emptyDescription?: string;
+    variant?: 'files' | 'trash';
+    restoringPublicIds?: string[];
   }>(),
   {
     emptyTitle: 'This folder is empty',
     emptyDescription: 'Files and folders you add will appear here.',
+    variant: 'files',
   },
 );
 
@@ -27,9 +30,10 @@ const emit = defineEmits<{
   (event: 'retry'): void;
   (event: 'open', item: FileItem): void;
   (event: 'download', item: FileItem): void;
-  (event: 'delete', item: FileItem): void;
+  (event: 'move-to-trash', item: FileItem): void;
   (event: 'info', item: FileItem): void;
   (event: 'star', item: FileItem, isStarred: boolean): void;
+  (event: 'restore', item: FileItem): void;
 }>();
 
 function handleStarToggle(item: FileItem, isStarred: boolean) {
@@ -54,7 +58,7 @@ function handleStarToggle(item: FileItem, isStarred: boolean) {
     </div>
 
     <p v-if="props.isLoading" class="files-message" role="status">
-      Loading your files…
+      {{ props.variant === 'trash' ? 'Loading trash…' : 'Loading your files…' }}
     </p>
 
     <div v-else-if="props.error" class="files-message" role="alert">
@@ -85,12 +89,20 @@ function handleStarToggle(item: FileItem, isStarred: boolean) {
             <span class="item-kind">File</span>
           </div>
 
-          <FileStarButton :item="item" :disabled="props.updatingStarredIds?.includes(item.public_id) ?? false"
-            @toggle="handleStarToggle" />
+          <template v-if="props.variant === 'trash'">
+            <FileActionsMenu :item="item" variant="trash"
+              :restoring="props.restoringPublicIds?.includes(item.public_id) ?? false"
+              @restore="emit('restore', $event)" @info="emit('info', $event)" />
+          </template>
 
-          <FileActionsMenu :item="item" :downloading="props.downloadingFileId === item.public_id"
-            @open="emit('open', $event)" @download="emit('download', $event)" @delete="emit('delete', $event)"
-            @info="emit('info', $event)" />
+          <template v-else>
+            <FileStarButton :item="item" :disabled="props.updatingStarredIds?.includes(item.public_id) ?? false"
+              @toggle="handleStarToggle" />
+
+            <FileActionsMenu :item="item" :downloading="props.downloadingFileId === item.public_id"
+              @open="emit('open', $event)" @download="emit('download', $event)"
+              @move-to-trash="emit('move-to-trash', $event)" @info="emit('info', $event)" />
+          </template>
         </div>
       </li>
     </ul>

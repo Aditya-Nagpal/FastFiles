@@ -1,24 +1,26 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
+import { isAxiosError } from 'axios';
 import { useFilesStore } from '../stores/files';
 import type { FileItem, FileSearchMode } from '../stores/files';
+import { useStarredStore } from '../stores/starred';
+import { useStorageQuotaStore } from '../stores/storageQuota';
 import FileSearch from '../components/files/FileSearch.vue';
 import CreateFolderModal from '../components/files/CreateFolderModal.vue';
 import UploadFileModal from '../components/files/UploadFileModal.vue';
 import ConfirmDeleteModal from '../components/files/ConfirmDeleteModal.vue';
 import FileList from '../components/files/FileList.vue';
+import FileInfoModal from '../components/files/FileInfoModal.vue';
 import AppSidebar from '../components/layout/AppSidebar.vue';
 import AppTopbar from '../components/layout/AppTopbar.vue';
 import AppFooter from '../components/layout/AppFooter.vue';
-import FileInfoModal from '../components/files/FileInfoModal.vue';
-import { useStorageQuotaStore } from '../stores/storageQuota';
-import { useStarredStore } from '../stores/starred';
-import { isAxiosError } from 'axios';
 
 type Theme = 'light' | 'dark';
 
 const theme = ref<Theme>('light');
 const files = useFilesStore();
+const starred = useStarredStore();
+const storageQuota = useStorageQuotaStore();
 
 const isFolderModalOpen = ref(false);
 const isCreatingFolder = ref(false);
@@ -31,16 +33,12 @@ const uploadModalError = ref('');
 const downloadingFileId = ref<string | null>(null);
 const downloadError = ref('');
 
-const isDeleteModalOpen = ref(false);
-const itemToDelete = ref<FileItem | null>(null);
-const isDeleting = ref(false);
-const deleteError = ref('');
+const isMoveToTrashModalOpen = ref(false);
+const itemToMoveToTrash = ref<FileItem | null>(null);
+const isMovingToTrash = ref(false);
+const moveToTrashError = ref('');
 
 const itemForInfo = ref<FileItem | null>(null);
-
-const storageQuota = useStorageQuotaStore();
-
-const starred = useStarredStore();
 const starError = ref('');
 
 function applyTheme(value: Theme) {
@@ -134,40 +132,41 @@ async function downloadFile(item: FileItem) {
   }
 }
 
-function requestDelete(item: FileItem, event?: MouseEvent) {
-  (event?.currentTarget as HTMLElement | undefined)
-    ?.closest('details')
-    ?.removeAttribute('open');
-
-  itemToDelete.value = item;
-  deleteError.value = '';
-  isDeleteModalOpen.value = true;
+function requestMoveToTrash(item: FileItem) {
+  itemToMoveToTrash.value = item;
+  moveToTrashError.value = '';
+  isMoveToTrashModalOpen.value = true;
 }
 
-function closeDeleteModal() {
-  if (isDeleting.value) return;
+function closeMoveToTrashModal() {
+  if (isMovingToTrash.value) return;
 
-  isDeleteModalOpen.value = false;
-  itemToDelete.value = null;
-  deleteError.value = '';
+  isMoveToTrashModalOpen.value = false;
+  itemToMoveToTrash.value = null;
+  moveToTrashError.value = '';
 }
 
-async function confirmDelete() {
-  if (!itemToDelete.value) return;
+async function confirmMoveToTrash() {
+  if (!itemToMoveToTrash.value) return;
 
-  isDeleting.value = true;
-  deleteError.value = '';
+  isMovingToTrash.value = true;
+  moveToTrashError.value = '';
 
   try {
-    await files.deleteItem(itemToDelete.value.public_id);
+    const publicId = itemToMoveToTrash.value.public_id;
+
+    await files.moveToTrash(publicId);
+    starred.removeItem(publicId);
     refreshStorageQuota();
-    isDeleteModalOpen.value = false;
-    itemToDelete.value = null;
+
+    isMoveToTrashModalOpen.value = false;
+    itemToMoveToTrash.value = null;
   } catch (error) {
-    console.error('Delete failed:', error);
-    deleteError.value = 'Could not delete this item. Please try again.';
+    console.error('Move to trash failed:', error);
+    moveToTrashError.value =
+      'Could not move this item to Trash. Please try again.';
   } finally {
-    isDeleting.value = false;
+    isMovingToTrash.value = false;
   }
 }
 
@@ -266,6 +265,7 @@ onMounted(() => {
               <span aria-hidden="true">＋</span>
               New folder
             </button>
+
             <button class="button button-primary" type="button" @click="openUploadModal">
               <span aria-hidden="true">↑</span>
               Upload
@@ -275,7 +275,8 @@ onMounted(() => {
 
         <FileSearch :results="files.searchResults" :total="files.searchTotal" :is-searching="files.isSearching"
           :error="files.searchError" :updating-starred-ids="starred.updatingPublicIds" @search="handleSearch"
-          @clear="clearSearch" @download="downloadFile" @open="openFolder" @delete="requestDelete" @star="updateStar" />
+          @clear="clearSearch" @download="downloadFile" @open="openFolder" @move-to-trash="requestMoveToTrash"
+          @star="updateStar" />
 
         <p v-if="downloadError" class="upload-error" role="alert">
           {{ downloadError }}
@@ -289,7 +290,7 @@ onMounted(() => {
           <FileList :items="files.contents" :total="files.total" :is-loading="files.isLoading"
             :error="files.errorMessage" :current-key="files.currentKey" :can-go-back="files.keyStack.length > 0"
             :downloading-file-id="downloadingFileId" :updating-starred-ids="starred.updatingPublicIds" @back="goBack"
-            @retry="loadContents" @open="openFolder" @download="downloadFile" @delete="requestDelete"
+            @retry="loadContents" @open="openFolder" @download="downloadFile" @move-to-trash="requestMoveToTrash"
             @info="showFileInfo" @star="updateStar" />
 
           <CreateFolderModal :open="isFolderModalOpen" :is-creating="isCreatingFolder" :error="folderError"
@@ -298,8 +299,8 @@ onMounted(() => {
           <UploadFileModal :open="isUploadModalOpen" :is-uploading="isUploading" :error="uploadModalError"
             @close="closeUploadModal" @upload="uploadSelectedFile" />
 
-          <ConfirmDeleteModal :open="isDeleteModalOpen" :item="itemToDelete" :is-deleting="isDeleting"
-            :error="deleteError" @close="closeDeleteModal" @confirm="confirmDelete" />
+          <ConfirmDeleteModal :open="isMoveToTrashModalOpen" :item="itemToMoveToTrash" :is-deleting="isMovingToTrash"
+            :error="moveToTrashError" @close="closeMoveToTrashModal" @confirm="confirmMoveToTrash" />
 
           <FileInfoModal :open="itemForInfo !== null" :item="itemForInfo" @close="closeFileInfo" />
         </section>

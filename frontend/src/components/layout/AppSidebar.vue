@@ -69,10 +69,10 @@ async function signOut() {
           <span class="nav-icon">☆</span>
           <span>Starred</span>
         </RouterLink>
-        <div class="nav-item">
+        <RouterLink class="nav-item" to="/trash" exact-active-class="is-active">
           <span class="nav-icon">▱</span>
           <span>Trash</span>
-        </div>
+        </RouterLink>
       </nav>
     </div>
 

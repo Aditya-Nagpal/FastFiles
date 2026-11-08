@@ -160,21 +160,30 @@ export const useFilesStore = defineStore('files', {
             window.location.assign(downloadURL);
         },
 
-        async deleteItem(publicId: string) {
-            await apiClient.delete(`${apiRoutes.files}/delete/${publicId}`);
+        async moveToTrash(publicId: string) {
+            await apiClient.patch(
+                `${apiRoutes.files}/trash/${encodeURIComponent(publicId)}`,
+            );
+
+            const wasInContents = this.contents.some(
+                (item) => item.public_id === publicId,
+            );
+            this.contents = this.contents.filter(
+                (item) => item.public_id !== publicId,
+            );
+            if (wasInContents) {
+                this.total = Math.max(0, this.total - 1);
+            }
 
             const wasInSearchResults = this.searchResults.some(
                 (item) => item.public_id === publicId,
             );
-
+            this.searchResults = this.searchResults.filter(
+                (item) => item.public_id !== publicId,
+            );
             if (wasInSearchResults) {
-                this.searchResults = this.searchResults.filter(
-                    (item) => item.public_id !== publicId,
-                );
                 this.searchTotal = Math.max(0, this.searchTotal - 1);
             }
-
-            await this.fetchContents();
         },
     },
 });

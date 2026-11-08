@@ -38,10 +38,10 @@ function confirmDelete() {
     >
       <div class="delete-warning-icon" aria-hidden="true">!</div>
 
-      <h2 id="delete-modal-title">Delete this item?</h2>
+      <h2 id="delete-modal-title">Move to trash?</h2>
       <p class="modal-copy">
-        Are you sure you want to delete
-        <strong>{{ props.item.name }}</strong>?
+        Are you sure you want to move
+        <strong>{{ props.item.name }}</strong> to Trash? You can restore it later.
       </p>
 
       <p v-if="props.error" class="modal-error" role="alert">
@@ -63,7 +63,7 @@ function confirmDelete() {
           :disabled="props.isDeleting"
           @click="confirmDelete"
         >
-          {{ props.isDeleting ? 'Deleting…' : 'Delete' }}
+          {{ props.isDeleting ? 'Moving…' : 'Move to trash' }}
         </button>
       </div>
     </section>

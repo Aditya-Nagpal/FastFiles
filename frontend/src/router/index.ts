@@ -10,6 +10,7 @@ import { pinia } from '../stores/pinia';
 import { useAuthStore } from '../stores/auth';
 import { useUserStore } from '../stores/user';
 import StarredView from '../views/StarredView.vue';
+import TrashView from '../views/TrashView.vue';
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -40,6 +41,12 @@ const router = createRouter({
       path: '/starred',
       name: 'starred',
       component: StarredView,
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/trash',
+      name: 'trash',
+      component: TrashView,
       meta: { requiresAuth: true },
     },
   ],

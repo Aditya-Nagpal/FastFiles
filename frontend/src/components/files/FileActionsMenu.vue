@@ -6,16 +6,21 @@ const props = withDefaults(
   defineProps<{
     item: FileItem;
     downloading?: boolean;
+    variant?: 'files' | 'trash';
+    restoring?: boolean;
   }>(),
   {
     downloading: false,
+    variant: 'files',
+    restoring: false,
   },
 );
 
 const emit = defineEmits<{
   (event: 'open', item: FileItem): void;
   (event: 'download', item: FileItem): void;
-  (event: 'delete', item: FileItem): void;
+  (event: 'move-to-trash', item: FileItem): void;
+  (event: 'restore', item: FileItem): void;
   (event: 'info', item: FileItem): void;
 }>();
 
@@ -31,11 +36,7 @@ function handleOutsidePointerDown(event: PointerEvent) {
   const menu = menuElement.value;
   const target = event.target;
 
-  if (
-    menu?.open &&
-    target instanceof Node &&
-    !menu.contains(target)
-  ) {
+  if (menu?.open && target instanceof Node && !menu.contains(target)) {
     closeMenu();
   }
 }
@@ -50,9 +51,16 @@ function downloadFile() {
   emit('download', props.item);
 }
 
-function deleteItem() {
+function moveToTrash() {
   closeMenu();
-  emit('delete', props.item);
+  emit('move-to-trash', props.item);
+}
+
+function restoreItem() {
+  if (props.restoring) return;
+
+  closeMenu();
+  emit('restore', props.item);
 }
 
 function showInfo() {
@@ -76,17 +84,25 @@ onBeforeUnmount(() => {
     </summary>
 
     <div class="file-actions-menu">
-      <button v-if="props.item.type === 'FOLDER'" type="button" @click="openFolder">
-        Open folder
-      </button>
+      <template v-if="props.variant === 'trash'">
+        <button type="button" :disabled="props.restoring" @click="restoreItem">
+          {{ props.restoring ? 'Restoring…' : 'Restore' }}
+        </button>
+      </template>
 
-      <button v-else type="button" :disabled="props.downloading" @click="downloadFile">
-        {{ props.downloading ? 'Preparing…' : 'Download' }}
-      </button>
+      <template v-else>
+        <button v-if="props.item.type === 'FOLDER'" type="button" @click="openFolder">
+          Open folder
+        </button>
 
-      <button class="danger-menu-item" type="button" @click="deleteItem">
-        Delete
-      </button>
+        <button v-else type="button" :disabled="props.downloading" @click="downloadFile">
+          {{ props.downloading ? 'Preparing…' : 'Download' }}
+        </button>
+
+        <button class="danger-menu-item" type="button" @click="moveToTrash">
+          Move to trash
+        </button>
+      </template>
 
       <button type="button" @click="showInfo">
         Information

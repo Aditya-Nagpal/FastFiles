@@ -21,10 +21,10 @@ const storageQuota = useStorageQuotaStore();
 
 const theme = ref<Theme>('light');
 const downloadingFileId = ref<string | null>(null);
-const itemToDelete = ref<FileItem | null>(null);
+const itemToMoveToTrash = ref<FileItem | null>(null);
 const itemForInfo = ref<FileItem | null>(null);
-const isDeleting = ref(false);
-const deleteError = ref('');
+const isMovingToTrash = ref(false);
+const moveToTrashError = ref('');
 const actionError = ref('');
 
 function applyTheme(value: Theme) {
@@ -88,39 +88,50 @@ async function downloadFile(item: FileItem) {
     }
 }
 
-function requestDelete(item: FileItem) {
-    itemToDelete.value = item;
-    deleteError.value = '';
+function requestMoveToTrash(item: FileItem) {
+    itemToMoveToTrash.value = item;
+    moveToTrashError.value = '';
 }
 
-function closeDeleteModal() {
-    if (isDeleting.value) return;
-    itemToDelete.value = null;
-    deleteError.value = '';
+function closeMoveToTrashModal() {
+    if (isMovingToTrash.value) return;
+
+    itemToMoveToTrash.value = null;
+    moveToTrashError.value = '';
 }
 
-async function confirmDelete() {
-    if (!itemToDelete.value) return;
+async function confirmMoveToTrash() {
+    if (!itemToMoveToTrash.value) return;
 
-    isDeleting.value = true;
-    deleteError.value = '';
+    isMovingToTrash.value = true;
+    moveToTrashError.value = '';
 
     try {
-        const publicId = itemToDelete.value.public_id;
-        await files.deleteItem(publicId);
+        const publicId = itemToMoveToTrash.value.public_id;
+        await files.moveToTrash(publicId);
 
-        starred.items = starred.items.filter((item) => item.public_id !== publicId);
-        starred.total = Math.max(0, starred.total - 1);
+        const wasStarred = starred.items.some(
+            (item) => item.public_id === publicId,
+        );
 
-        itemToDelete.value = null;
+        starred.items = starred.items.filter(
+            (item) => item.public_id !== publicId,
+        );
+
+        if (wasStarred) {
+            starred.total = Math.max(0, starred.total - 1);
+        }
+
+        itemToMoveToTrash.value = null;
+
         void storageQuota.fetchQuota().catch((error) => {
             console.error('Could not refresh storage quota:', error);
         });
     } catch (error) {
-        console.error('Delete failed:', error);
-        deleteError.value = 'Could not delete this item. Please try again.';
+        console.error('Move to trash failed:', error);
+        moveToTrashError.value = 'Could not move this item to Trash. Please try again.';
     } finally {
-        isDeleting.value = false;
+        isMovingToTrash.value = false;
     }
 }
 
@@ -162,11 +173,12 @@ onMounted(() => {
                         :error="starred.errorMessage" current-key="Starred" :can-go-back="false"
                         :downloading-file-id="downloadingFileId" :updating-starred-ids="starred.updatingPublicIds"
                         empty-title="Nothing starred yet" empty-description="Star a file or folder to find it here."
-                        @retry="loadStarred" @open="openFolder" @download="downloadFile" @delete="requestDelete"
-                        @info="showInfo" @star="toggleStar" />
+                        @retry="loadStarred" @open="openFolder" @download="downloadFile"
+                        @move-to-trash="requestMoveToTrash" @info="showInfo" @star="toggleStar" />
 
-                    <ConfirmDeleteModal :open="itemToDelete !== null" :item="itemToDelete" :is-deleting="isDeleting"
-                        :error="deleteError" @close="closeDeleteModal" @confirm="confirmDelete" />
+                    <ConfirmDeleteModal :open="itemToMoveToTrash !== null" :item="itemToMoveToTrash"
+                        :is-deleting="isMovingToTrash" :error="moveToTrashError" @close="closeMoveToTrashModal"
+                        @confirm="confirmMoveToTrash" />
 
                     <FileInfoModal :open="itemForInfo !== null" :item="itemForInfo" @close="itemForInfo = null" />
                 </section>

@@ -22,7 +22,7 @@ const emit = defineEmits<{
     (event: 'clear'): void;
     (event: 'download', item: FileItem): void;
     (event: 'open', item: FileItem): void;
-    (event: 'delete', item: FileItem): void;
+    (event: 'move-to-trash', item: FileItem): void;
     (event: 'star', item: FileItem, isStarred: boolean): void;
 }>();
 
@@ -161,7 +161,7 @@ function formatFileSize(size?: number | null) {
                         @toggle="handleStarToggle" />
 
                     <FileActionsMenu :item="item" @open="emit('open', $event)" @download="emit('download', $event)"
-                        @delete="emit('delete', $event)" />
+                        @move-to-trash="emit('move-to-trash', $event)" />
                 </li>
             </ul>
         </div>
