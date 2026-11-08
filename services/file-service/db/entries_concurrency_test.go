@@ -147,7 +147,7 @@ func TestConcurrentUploadAndFolderDeletion(t *testing.T) {
 
 	go func() {
 		<-start
-		deleteResult <- DeleteFolder(ctx, rootPublicID, userID)
+		deleteResult <- SoftDeleteFolder(ctx, rootPublicID, userID)
 	}()
 
 	close(start)
@@ -370,7 +370,7 @@ func TestUploadLockFirstThenFolderDeletion(t *testing.T) {
 
 	go func() {
 		close(deleteStarted)
-		deleteDone <- DeleteFolder(ctx, rootPublicID, userID)
+		deleteDone <- SoftDeleteFolder(ctx, rootPublicID, userID)
 	}()
 
 	<-deleteStarted
@@ -766,7 +766,7 @@ func TestConcurrentInsertEntryAndFinalizeStorageVsDeleteFolder(t *testing.T) {
 
 	go func() {
 		<-start
-		deleteDone <- DeleteFolder(ctx, rootPublicID, userID)
+		deleteDone <- SoftDeleteFolder(ctx, rootPublicID, userID)
 	}()
 
 	close(start)
@@ -996,7 +996,7 @@ func TestSuccessfulUploadThenFolderDeletion(t *testing.T) {
 	}
 
 	// Phase 2: deletion begins only after successful upload commit.
-	if err := DeleteFolder(ctx, rootPublicID, userID); err != nil {
+	if err := SoftDeleteFolder(ctx, rootPublicID, userID); err != nil {
 		t.Fatalf("delete folder after successful upload: %v", err)
 	}
 
@@ -1152,7 +1152,7 @@ func TestConcurrentCreateFolderAndDeleteAncestor(t *testing.T) {
 
 	go func() {
 		<-start
-		deleteDone <- DeleteFolder(ctx, rootPublicID, userID)
+		deleteDone <- SoftDeleteFolder(ctx, rootPublicID, userID)
 	}()
 
 	close(start)
@@ -1310,7 +1310,7 @@ func TestSuccessfulFolderCreationThenAncestorDeletion(t *testing.T) {
 	}
 
 	// Phase 2: delete the ancestor after folder creation commits.
-	if err := DeleteFolder(ctx, rootPublicID, userID); err != nil {
+	if err := SoftDeleteFolder(ctx, rootPublicID, userID); err != nil {
 		t.Fatalf("delete ancestor after folder creation: %v", err)
 	}
 

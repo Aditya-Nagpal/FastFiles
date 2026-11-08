@@ -271,64 +271,6 @@ type DeleteRequest struct {
 	Type       string `json:"type"`
 }
 
-func DeleteContent(uploader *utils.S3Uploader) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		userId, err := httputils.GetUserIdHeader(c)
-		if httputils.HandleUserIdHeaderError(c, err) {
-			return
-		}
-
-		publicID := c.Param("id")
-		if publicID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid public ID"})
-			return
-		}
-
-		entityType, err := db.GetEntityType(c.Request.Context(), publicID, userId)
-		if entityType == "" && err == nil {
-			c.JSON(http.StatusNotFound, gin.H{"message": "File or folder not found"})
-			return
-		} else if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to get entity type", "error": err.Error()})
-			return
-		}
-
-		switch entityType {
-		case "file":
-			err = db.DeleteFile(c.Request.Context(), publicID, userId)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to delete file", "error": err.Error()})
-				return
-			}
-		case "folder":
-			err = db.DeleteFolder(c.Request.Context(), publicID, userId)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to delete folder", "error": err.Error()})
-				return
-			}
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid entity type"})
-			return
-		}
-
-		if errors.Is(err, db.ErrEntryNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"message": "File or folder not found",
-			})
-			return
-		}
-
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"message": "Failed to delete entry",
-			})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{"message": "Deleted successfully"})
-	}
-}
-
 func MoveToTrash() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userId, err := httputils.GetUserIdHeader(c)
