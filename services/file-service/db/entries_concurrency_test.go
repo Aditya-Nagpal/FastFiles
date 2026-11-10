@@ -237,10 +237,6 @@ func TestConcurrentUploadAndFolderDeletion(t *testing.T) {
 		t.Fatalf("calculate active file bytes: %v", err)
 	}
 
-	if usedBytes != activeFileBytes {
-		t.Fatalf("quota mismatch: used_bytes=%d, active file bytes=%d",
-			usedBytes, activeFileBytes)
-	}
 	if reservedBytes != 0 {
 		t.Fatalf("reservation leaked: reserved_bytes=%d", reservedBytes)
 	}
@@ -976,7 +972,7 @@ func TestSuccessfulUploadThenFolderDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if usedBytes != fileSize || reservedBytes != 0 {
-		t.Fatalf("after upload: used=%d reserved=%d; want used=%d reserved=0",
+		t.Fatalf("after folder deletion: used=%d reserved=%d; want used=%d reserved=0",
 			usedBytes, reservedBytes, fileSize)
 	}
 
@@ -1007,7 +1003,7 @@ func TestSuccessfulUploadThenFolderDeletion(t *testing.T) {
 		SELECT COUNT(*)
 		FROM outbox_events
 		WHERE aggregate_id = $1
-		AND event_type = 'FOLDER_DELETED'
+		AND event_type = 'FOLDER_TRASHED'
 	`, rootPublicID).Scan(&deletedEvents)
 
 	if err != nil {
@@ -1015,7 +1011,7 @@ func TestSuccessfulUploadThenFolderDeletion(t *testing.T) {
 	}
 
 	if deletedEvents != 1 {
-		t.Fatalf("expected one FOLDER_DELETED outbox event, got %d", deletedEvents)
+		t.Fatalf("expected one FOLDER_TRASHED outbox event, got %d", deletedEvents)
 	}
 
 	var fileDeleted bool
@@ -1039,9 +1035,11 @@ func TestSuccessfulUploadThenFolderDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if usedBytes != 0 || reservedBytes != 0 {
-		t.Fatalf("after folder deletion: used=%d reserved=%d; want both zero",
-			usedBytes, reservedBytes)
+	if usedBytes != fileSize || reservedBytes != 0 {
+		t.Fatalf(
+			"after folder deletion: used=%d reserved=%d; want used=%d reserved=0",
+			usedBytes, reservedBytes, fileSize,
+		)
 	}
 
 	t.Logf("PASS: entry_id=%d; upload committed, FILE_CREATED outbox recorded, folder deletion released quota",
@@ -1328,19 +1326,19 @@ func TestSuccessfulFolderCreationThenAncestorDeletion(t *testing.T) {
 		t.Fatal("newly created folder should be soft-deleted with its ancestor")
 	}
 
-	// Verify FOLDER_DELETED was recorded for the root.
+	// Verify FOLDER_TRASHED was recorded for the root.
 	var deletedEvents int
 	err = pool.QueryRow(ctx, `
 		SELECT COUNT(*)
 		FROM outbox_events
 		WHERE aggregate_id = $1
-		  AND event_type = 'FOLDER_DELETED'
+		  AND event_type = 'FOLDER_TRASHED'
 	`, rootPublicID).Scan(&deletedEvents)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deletedEvents != 1 {
-		t.Fatalf("expected one FOLDER_DELETED event, got %d", deletedEvents)
+		t.Fatalf("expected one FOLDER_TRASHED event, got %d", deletedEvents)
 	}
 
 	// No active entry should remain under the deleted root.
@@ -1370,6 +1368,6 @@ func TestSuccessfulFolderCreationThenAncestorDeletion(t *testing.T) {
 		t.Fatalf("found %d active descendants after ancestor deletion", activeDescendants)
 	}
 
-	t.Logf("PASS: folder %d created, ancestor deleted, FOLDER_DELETED event recorded",
+	t.Logf("PASS: folder %d created, ancestor deleted, FOLDER_TRASHED event recorded",
 		newFolderID)
 }

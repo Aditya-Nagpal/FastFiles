@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/config"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/file-service/models"
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/events"
 	"github.com/google/uuid"
@@ -1244,6 +1245,306 @@ func RestoreFolder(ctx context.Context, publicId string, userId int64) error {
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit folder restore operation: %w", err)
+	}
+
+	return nil
+}
+
+// LockPermanentDeleteHierarchy locks the target's complete ancestor hierarchy.
+//
+// Unlike LockTrashedEntryHierarchy, this allows trashed ancestors because
+// an item can be permanently deleted from inside a trashed parent folder.
+//
+// Ancestors are locked FOR SHARE and the target FOR UPDATE, always root -> target.
+func LockPermanentDeleteHierarchy(
+	tx pgx.Tx,
+	ctx context.Context,
+	userID int64,
+	entryID int64,
+	expectedTargetType string,
+) error {
+	rows, err := tx.Query(ctx, `
+		WITH RECURSIVE ancestors AS (
+			SELECT
+				id,
+				parent_id,
+				type,
+				ARRAY[id]::BIGINT[] AS path
+			FROM entries
+			WHERE id = $1
+			  AND user_id = $2
+
+			UNION ALL
+
+			SELECT
+				p.id,
+				p.parent_id,
+				p.type,
+				a.path || p.id
+			FROM entries p
+			JOIN ancestors a ON a.parent_id = p.id
+			WHERE p.user_id = $2
+			  AND NOT p.id = ANY(a.path)
+		)
+		SELECT id
+		FROM ancestors
+		ORDER BY cardinality(path) DESC
+	`, entryID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to read entry hierarchy: %w", err)
+	}
+
+	var hierarchyIDs []int64
+
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		hierarchyIDs = append(hierarchyIDs, id)
+	}
+
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	if len(hierarchyIDs) == 0 || hierarchyIDs[len(hierarchyIDs)-1] != entryID {
+		return ErrEntryNotFound
+	}
+
+	// Acquire locks in root -> target order and validate the current rows
+	// after obtaining each lock.
+	var previousID int64
+	var previousType string
+
+	for i, id := range hierarchyIDs {
+		var (
+			lockedID  int64
+			parentID  *int64
+			entryType string
+			deletedAt sql.NullTime
+		)
+
+		if i == len(hierarchyIDs)-1 {
+			err = tx.QueryRow(ctx, `
+				SELECT id, parent_id, type, deleted_at
+				FROM entries
+				WHERE id = $1 AND user_id = $2
+				FOR UPDATE
+			`, id, userID).Scan(
+				&lockedID, &parentID, &entryType, &deletedAt,
+			)
+		} else {
+			err = tx.QueryRow(ctx, `
+				SELECT id, parent_id, type, deleted_at
+				FROM entries
+				WHERE id = $1 AND user_id = $2
+				FOR SHARE
+			`, id, userID).Scan(
+				&lockedID, &parentID, &entryType, &deletedAt,
+			)
+		}
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrEntryNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock hierarchy entry: %w", err)
+		}
+
+		if i == 0 {
+			if parentID != nil {
+				return ErrInvalidEntryHierarchy
+			}
+		} else {
+			if parentID == nil || *parentID != previousID || previousType != "FOLDER" {
+				return ErrInvalidEntryHierarchy
+			}
+		}
+
+		if i == len(hierarchyIDs)-1 {
+			if entryType != expectedTargetType {
+				return ErrInvalidEntryHierarchy
+			}
+			if !deletedAt.Valid {
+				return ErrEntryNotFound
+			}
+		}
+
+		previousID = lockedID
+		previousType = entryType
+	}
+
+	return nil
+}
+
+// PermanentlyDeleteEntry permanently deletes an item that is already in Trash.
+//
+// For folders, the complete subtree is deleted, including independently
+// trashed descendants. Quota release and the S3 cleanup outbox event are
+// committed atomically with the database deletion.
+func PermanentlyDeleteEntry(ctx context.Context, publicID string, userID int64) error {
+	tx, err := DB.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin permanent delete transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		entryID   int64
+		entryType string
+	)
+
+	err = tx.QueryRow(ctx, `
+		SELECT id, type
+		FROM entries
+		WHERE public_id = $1
+		  AND user_id = $2
+		  AND deleted_at IS NOT NULL
+	`, publicID, userID).Scan(&entryID, &entryType)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrEntryNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to find trashed entry: %w", err)
+	}
+
+	// Lock and validate the target hierarchy. Trashed ancestors are allowed.
+	if err := LockPermanentDeleteHierarchy(tx, ctx, userID, entryID, entryType); err != nil {
+		return fmt.Errorf("failed to lock permanent delete hierarchy: %w", err)
+	}
+
+	// Collect every descendant, including already-trashed descendants.
+	// Do not filter by deleted_at here.
+	rows, err := tx.Query(ctx, `
+		WITH RECURSIVE subtree AS (
+			SELECT
+				id,
+				type,
+				size,
+				s3_key,
+				ARRAY[id]::BIGINT[] AS path
+			FROM entries
+			WHERE id = $1
+			  AND user_id = $2
+
+			UNION ALL
+
+			SELECT
+				e.id,
+				e.type,
+				e.size,
+				e.s3_key,
+				s.path || e.id
+			FROM entries e
+			JOIN subtree s ON e.parent_id = s.id
+			WHERE e.user_id = $2
+			  AND NOT e.id = ANY(s.path)
+		)
+		SELECT type, size, s3_key
+		FROM subtree
+	`, entryID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to collect subtree: %w", err)
+	}
+
+	var (
+		totalSize int64
+		objects   []events.S3CleanupObject
+	)
+
+	bucketName := config.AppConfig.BucketName
+
+	for rows.Next() {
+		var (
+			itemType string
+			size     int64
+			s3Key    sql.NullString
+		)
+
+		if err := rows.Scan(&itemType, &size, &s3Key); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to scan subtree entry: %w", err)
+		}
+
+		if itemType == "FILE" {
+			totalSize += size
+
+			if s3Key.Valid && s3Key.String != "" {
+				objects = append(objects, events.S3CleanupObject{
+					BucketName: bucketName,
+					S3Key:      s3Key.String,
+				})
+			}
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("failed to read subtree: %w", err)
+	}
+	rows.Close()
+
+	if len(objects) > 0 && bucketName == "" {
+		return fmt.Errorf("S3 bucket name cannot be empty")
+	}
+
+	// Release quota in the same transaction as the permanent deletion.
+	if totalSize > 0 {
+		if _, err := ReleaseQuota(tx, ctx, userID, totalSize); err != nil {
+			return fmt.Errorf("failed to release storage quota: %w", err)
+		}
+	}
+
+	// ON DELETE CASCADE permanently removes all descendants.
+	result, err := tx.Exec(ctx, `
+		DELETE FROM entries
+		WHERE id = $1
+		  AND user_id = $2
+		  AND deleted_at IS NOT NULL
+	`, entryID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to permanently delete entry: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return ErrEntryNotFound
+	}
+
+	// Only create an S3 cleanup event when there are actual objects to delete.
+	if len(objects) > 0 {
+		eventID := uuid.NewString()
+
+		payload, err := json.Marshal(events.S3CleanupEvent{
+			EventID:   eventID,
+			EventType: events.EventS3Cleanup,
+			UserID:    userID,
+			Objects:   objects,
+			CreatedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal S3 cleanup event: %w", err)
+		}
+
+		if err := InsertOutboxEvent(
+			tx,
+			ctx,
+			eventID,
+			payload,
+			"S3_CLEANUP",
+			publicID,
+			events.EventS3Cleanup,
+		); err != nil {
+			return fmt.Errorf("failed to insert S3 cleanup outbox event: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit permanent delete transaction: %w", err)
 	}
 
 	return nil

@@ -51,10 +51,11 @@ func runS3CleanupConsumer(ctx context.Context, brokers []string, topic, groupID 
 			continue
 		}
 
-		var event events.EntryEvent
-		if err := json.Unmarshal(message.Value, &event); err != nil {
+		// Decode event using the shared event registry.
+		decoded, err := events.DecodeEvent(message.Value)
+		if err != nil {
 			log.Printf(
-				"S3 cleanup: malformed event at offset=%d: %v",
+				"S3 cleanup: malformed or unsupported event at offset=%d: %v",
 				message.Offset,
 				err,
 			)
@@ -63,7 +64,7 @@ func runS3CleanupConsumer(ctx context.Context, brokers []string, topic, groupID 
 				ctx, brokers, message, err,
 			); dlqErr != nil {
 				log.Printf(
-					"S3 cleanup: failed to publish malformed event to DLQ: %v",
+					"S3 cleanup: failed to publish event to DLQ: %v",
 					dlqErr,
 				)
 
@@ -79,11 +80,9 @@ func runS3CleanupConsumer(ctx context.Context, brokers []string, topic, groupID 
 			continue
 		}
 
-		switch event.EventType {
-		case events.EventFileDeleted, events.EventFolderDeleted:
-			// Process deletion events.
-		default:
-			// This group also receives FILE_CREATED and ignores it.
+		// This consumer only handles S3CleanupEvent.
+		event, ok := decoded.(events.S3CleanupEvent)
+		if !ok {
 			if err := commitWithRetry(ctx, reader, message); err != nil {
 				return err
 			}
@@ -99,10 +98,13 @@ func runS3CleanupConsumer(ctx context.Context, brokers []string, topic, groupID 
 				break
 			}
 
-			var permanentErr *workers.PermanentError
-			if errors.As(err, &permanentErr) {
+			if permanentErr, ok := errors.AsType[*workers.PermanentError](err); ok {
 				if dlqErr := PublishToS3CleanupDLQ(
-					ctx, brokers, message, event.EventID, permanentErr,
+					ctx,
+					brokers,
+					message,
+					event.EventID,
+					permanentErr,
 				); dlqErr != nil {
 					log.Printf(
 						"S3 cleanup: DLQ publish failed for event %s: %v",
@@ -178,10 +180,7 @@ func runS3CleanupConsumer(ctx context.Context, brokers []string, topic, groupID 
 	}
 }
 
-func s3CleanupRetryDelay(
-	attempt int,
-	configurationError bool,
-) time.Duration {
+func s3CleanupRetryDelay(attempt int, configurationError bool) time.Duration {
 	delay := 2 * time.Second
 
 	if configurationError {

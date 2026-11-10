@@ -13,11 +13,7 @@ import (
 
 // CreateS3CleanupTask persists an S3 object that needs deletion.
 // ON CONFLICT is not used: separate cleanup attempts are separate records.
-func CreateS3CleanupTask(
-	ctx context.Context,
-	bucketName string,
-	s3Key string,
-) (int64, error) {
+func CreateS3CleanupTask(ctx context.Context, bucketName string, s3Key string) (int64, error) {
 	if bucketName == "" {
 		return 0, fmt.Errorf("bucket name cannot be empty")
 	}

@@ -53,7 +53,7 @@ func ClaimNextEvent(ctx context.Context) (*models.PendingEvent, error) {
 		SET locked_until = CURRENT_TIMESTAMP + INTERVAL '30 seconds'
 		FROM candidate AS c
 		WHERE o.id = c.id
-		RETURNING o.id, o.event_id, o.aggregate_id, o.payload
+		RETURNING o.id, o.event_id, o.aggregate_id, o.event_type, o.payload
 	`
 
 	var event models.PendingEvent
@@ -62,6 +62,7 @@ func ClaimNextEvent(ctx context.Context) (*models.PendingEvent, error) {
 		&event.ID,
 		&event.EventID,
 		&event.AggregateID,
+		&event.EventType,
 		&event.Payload,
 	)
 	if err != nil {

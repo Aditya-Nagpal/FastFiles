@@ -891,3 +891,62 @@ func TestNewLeaseTokenCanCompleteReclaimedTask(t *testing.T) {
 
 	t.Log("PASS: new lease token can complete a reclaimed task")
 }
+
+func TestClaimS3CleanupTaskByID(t *testing.T) {
+	ctx := setupS3CleanupTest(t)
+
+	taskID := createTestS3CleanupTask(t, ctx)
+
+	// First claim should succeed.
+	task, err := ClaimS3CleanupTaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to claim task by ID: %v", err)
+	}
+
+	if task == nil {
+		t.Fatal("expected task, got nil")
+	}
+
+	if task.ID != taskID {
+		t.Errorf("expected task ID %d, got %d", taskID, task.ID)
+	}
+
+	if task.Status != "PROCESSING" {
+		t.Errorf("expected status PROCESSING, got %s", task.Status)
+	}
+
+	if task.Attempts != 1 {
+		t.Errorf("expected attempts 1, got %d", task.Attempts)
+	}
+
+	if task.LeaseToken == nil {
+		t.Fatal("expected lease token, got nil")
+	}
+
+	if task.LeaseExpiresAt == nil {
+		t.Fatal("expected lease expiry, got nil")
+	}
+
+	// Second claim should return nil because task is already claimed.
+	secondTask, err := ClaimS3CleanupTaskByID(ctx, taskID)
+	if err != nil {
+		t.Fatalf("unexpected error on second claim: %v", err)
+	}
+
+	if secondTask != nil {
+		t.Fatal("expected nil for an already claimed task")
+	}
+}
+
+func TestClaimS3CleanupTaskByIDRejectsInvalidID(t *testing.T) {
+	ctx := context.Background()
+
+	invalidIDs := []int64{0, -1}
+
+	for _, id := range invalidIDs {
+		_, err := ClaimS3CleanupTaskByID(ctx, id)
+		if err == nil {
+			t.Errorf("expected error for invalid task ID %d", id)
+		}
+	}
+}

@@ -19,6 +19,8 @@ import (
 )
 
 func TestOutboxPublisher_PublishesPendingEvent(t *testing.T) {
+	// t.Skip("temporarily disabled: shared outbox queue interference")
+
 	// 1. Load environment.
 	envPath, err := findEnvFile()
 	if err != nil {
@@ -68,35 +70,44 @@ func TestOutboxPublisher_PublishesPendingEvent(t *testing.T) {
 		db.DB = previousDB
 	}()
 
-	// 3. Create a unique test event.
+	// 3. Create a unique S3 cleanup test event.
 	eventID := uuid.NewString()
 	publicID := "integration-file-" + uuid.NewString()
 
-	payload, err := json.Marshal(events.EntryEvent{
-		EventID:     eventID,
-		EventType:   events.EventFileDeleted,
-		AggregateID: publicID,
-		UserID:      987654321,
-		EntryID:     987654321,
-		PublicID:    publicID,
-		EntryType:   "FILE",
-		Size:        10,
-		CreatedAt:   time.Now().UTC(),
+	userID := int64(987654321)
+
+	objects := []events.S3CleanupObject{
+		{
+			BucketName: "fastfiles-integration-test",
+			S3Key:      "integration/file-1-" + uuid.NewString(),
+		},
+		{
+			BucketName: "fastfiles-integration-test",
+			S3Key:      "integration/file-2-" + uuid.NewString(),
+		},
+	}
+
+	payload, err := json.Marshal(events.S3CleanupEvent{
+		EventID:   eventID,
+		EventType: events.EventS3Cleanup,
+		UserID:    userID,
+		Objects:   objects,
+		CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatalf("marshal event: %v", err)
 	}
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO outbox_events (
-			event_id,
-			aggregate_type,
-			aggregate_id,
-			event_type,
-			payload
-		)
-		VALUES ($1, 'ENTRY', $2, $3, $4::jsonb)
-	`, eventID, publicID, events.EventFileDeleted, payload)
+	INSERT INTO outbox_events (
+		event_id,
+		aggregate_type,
+		aggregate_id,
+		event_type,
+		payload
+	)
+	VALUES ($1, 'S3_CLEANUP', $2, $3, $4::jsonb)
+`, eventID, publicID, events.EventS3Cleanup, payload)
 	if err != nil {
 		t.Fatalf("insert pending outbox event: %v", err)
 	}
@@ -155,15 +166,36 @@ func TestOutboxPublisher_PublishesPendingEvent(t *testing.T) {
 	}
 	defer stop()
 
-	// 7. Read the published Kafka message.
-	message, err := reader.ReadMessage(ctx)
-	if err != nil {
-		t.Fatalf("read published Kafka message: %v", err)
-	}
+	// 7. Read messages until this test's own event is received.
+	// The publisher consumes from a shared outbox table, so unrelated
+	// pending events may also be published to this test topic.
+	var (
+		message  kafka.Message
+		received events.S3CleanupEvent
+	)
 
-	var received events.EntryEvent
-	if err := json.Unmarshal(message.Value, &received); err != nil {
-		t.Fatalf("unmarshal Kafka message: %v", err)
+	for {
+		message, err = reader.ReadMessage(ctx)
+		if err != nil {
+			t.Fatalf("read published Kafka message: %v", err)
+		}
+
+		var candidate events.S3CleanupEvent
+		if err := json.Unmarshal(message.Value, &candidate); err != nil {
+			t.Fatalf("unmarshal Kafka message: %v", err)
+		}
+
+		if candidate.EventID != eventID {
+			t.Logf(
+				"ignoring unrelated outbox event: got event_id=%s, want=%s",
+				candidate.EventID,
+				eventID,
+			)
+			continue
+		}
+
+		received = candidate
+		break
 	}
 
 	// 8. Validate the received event.
@@ -175,20 +207,71 @@ func TestOutboxPublisher_PublishesPendingEvent(t *testing.T) {
 		)
 	}
 
-	if received.EventType != events.EventFileDeleted {
+	if received.EventType != events.EventS3Cleanup {
 		t.Fatalf(
 			"event type mismatch: got %q, want %q",
 			received.EventType,
-			events.EventFileDeleted,
+			events.EventS3Cleanup,
 		)
 	}
 
-	if received.PublicID != publicID {
+	if received.UserID != userID {
 		t.Fatalf(
-			"public ID mismatch: got %q, want %q",
-			received.PublicID,
-			publicID,
+			"user ID mismatch: got %d, want %d",
+			received.UserID,
+			userID,
 		)
+	}
+
+	if len(received.Objects) != len(objects) {
+		t.Fatalf(
+			"object count mismatch: got %d, want %d",
+			len(received.Objects),
+			len(objects),
+		)
+	}
+
+	for i, object := range received.Objects {
+		if object.BucketName != objects[i].BucketName {
+			t.Fatalf(
+				"bucket mismatch at index %d: got %q, want %q",
+				i,
+				object.BucketName,
+				objects[i].BucketName,
+			)
+		}
+
+		if object.S3Key != objects[i].S3Key {
+			t.Fatalf(
+				"S3 key mismatch at index %d: got %q, want %q",
+				i,
+				object.S3Key,
+				objects[i].S3Key,
+			)
+		}
+	}
+
+	// Verify Kafka message key.
+	if string(message.Key) != fmt.Sprintf("%d", userID) {
+		t.Fatalf(
+			"Kafka message key mismatch: got %q, want %d",
+			string(message.Key),
+			userID,
+		)
+	}
+
+	// Verify Kafka event headers.
+	headers := make(map[string]string)
+	for _, header := range message.Headers {
+		headers[header.Key] = string(header.Value)
+	}
+
+	if headers["event_id"] != eventID {
+		t.Fatalf("Kafka event_id header mismatch")
+	}
+
+	if headers["event_type"] != events.EventS3Cleanup {
+		t.Fatalf("Kafka event_type header mismatch")
 	}
 
 	// 9. Wait until the publisher marks the event as PUBLISHED.

@@ -5,9 +5,6 @@ import "time"
 const (
 	EventFileCreated = "FILE_CREATED"
 
-	EventFileDeleted   = "FILE_DELETED"
-	EventFolderDeleted = "FOLDER_DELETED"
-
 	EventFileTrashed   = "FILE_TRASHED"
 	EventFolderTrashed = "FOLDER_TRASHED"
 

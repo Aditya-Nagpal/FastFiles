@@ -452,3 +452,37 @@ func Restore() gin.HandlerFunc {
 		})
 	}
 }
+
+func PermanentlyDelete() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := httputils.GetUserIdHeader(c)
+		if httputils.HandleUserIdHeaderError(c, err) {
+			return
+		}
+
+		publicID := c.Param("id")
+		if publicID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "Entry ID is required"})
+			return
+		}
+
+		err = db.PermanentlyDeleteEntry(
+			c.Request.Context(),
+			publicID,
+			userID,
+		)
+		if err != nil {
+			if errors.Is(err, db.ErrEntryNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"message": "Trashed entry not found"})
+				return
+			}
+
+			log.Printf("Permanent delete failed for %s: %v", publicID, err)
+
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to permanently delete entry"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Entry permanently deleted"})
+	}
+}

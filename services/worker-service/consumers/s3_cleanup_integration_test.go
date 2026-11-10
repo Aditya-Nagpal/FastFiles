@@ -23,7 +23,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-func TestS3CleanupConsumer_FileDeleted_Integration(t *testing.T) {
+func TestS3CleanupConsumer_S3CleanupEvent_Integration(t *testing.T) {
 	if os.Getenv("RUN_INTEGRATION_TESTS") != "1" {
 		t.Skip("set RUN_INTEGRATION_TESTS=1 to run integration tests")
 	}
@@ -187,16 +187,17 @@ func TestS3CleanupConsumer_FileDeleted_Integration(t *testing.T) {
 	// Give the consumer time to join the group before publishing.
 	time.Sleep(2 * time.Second)
 
-	event := events.EntryEvent{
-		EventID:     uuid.NewString(),
-		EventType:   events.EventFileDeleted,
-		AggregateID: publicID,
-		UserID:      userID,
-		EntryID:     entryID,
-		PublicID:    publicID,
-		EntryType:   "FILE",
-		Size:        fileSize,
-		CreatedAt:   time.Now().UTC(),
+	event := events.S3CleanupEvent{
+		EventID:   uuid.NewString(),
+		EventType: events.EventS3Cleanup,
+		UserID:    userID,
+		Objects: []events.S3CleanupObject{
+			{
+				BucketName: testBucket,
+				S3Key:      s3Key,
+			},
+		},
+		CreatedAt: time.Now().UTC(),
 	}
 
 	payload, err := json.Marshal(event)
@@ -222,7 +223,7 @@ func TestS3CleanupConsumer_FileDeleted_Integration(t *testing.T) {
 		defer publishCancel()
 
 		err := writer.WriteMessages(publishCtx, kafka.Message{
-			Key:   []byte(fmt.Sprintf("%d", userID)),
+			Key:   fmt.Appendf(nil, "%d", userID),
 			Value: payload,
 			Headers: []kafka.Header{
 				{Key: "event_id", Value: []byte(event.EventID)},
@@ -234,31 +235,30 @@ func TestS3CleanupConsumer_FileDeleted_Integration(t *testing.T) {
 		}
 	}
 
-	// Publish the FILE_DELETED event.
+	// Publish the S3_CLEANUP event.
 	publish()
 
 	// Wait until the real consumer deletes the S3 object.
 	waitForS3ObjectDeletion(t, ctx, s3Client, testBucket, s3Key)
 
-	t.Log("SUCCESS: Kafka consumer processed FILE_DELETED and deleted the S3 object")
+	t.Log("SUCCESS: Kafka consumer processed S3_CLEANUP and deleted the S3 object")
 
-	// Deliver the same event again to verify idempotent cleanup.
-	publish()
-
-	// The handler should also safely process the duplicate.
-	// The object is already absent; DeleteObject must remain successful.
-	if err := utils.DeleteS3ObjectWithClient(
-		ctx,
-		s3Client,
-		testBucket,
-		s3Key,
-	); err != nil {
-		t.Fatalf("duplicate S3 deletion was not safe: %v", err)
+	// Recreate the object so duplicate event delivery exercises the consumer
+	// rather than directly calling the S3 deletion utility.
+	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String(s3Key),
+		Body:   strings.NewReader("FastFiles duplicate cleanup test"),
+	})
+	if err != nil {
+		t.Fatalf("failed to recreate test S3 object: %v", err)
 	}
 
+	// Deliver the same event again. The consumer should delete the object again.
+	publish()
 	waitForS3ObjectDeletion(t, ctx, s3Client, testBucket, s3Key)
 
-	t.Log("SUCCESS: repeated S3 deletion is safe")
+	t.Log("SUCCESS: duplicate S3_CLEANUP delivery is handled safely")
 
 	stopConsumer()
 
@@ -368,7 +368,7 @@ func createWorkerKafkaTopic(t *testing.T, brokers []string, topic string) {
 	}
 }
 
-func TestS3CleanupConsumer_FolderDeleted_Integration(t *testing.T) {
+func TestS3CleanupConsumer_FolderS3CleanupEvent_Integration(t *testing.T) {
 	if os.Getenv("RUN_INTEGRATION_TESTS") != "1" {
 		t.Skip("set RUN_INTEGRATION_TESTS=1 to run integration tests")
 	}
@@ -618,22 +618,22 @@ func TestS3CleanupConsumer_FolderDeleted_Integration(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	event := events.EntryEvent{
-		EventID:     uuid.NewString(),
-		EventType:   events.EventFolderDeleted,
-		AggregateID: rootPublicID,
-		UserID:      userID,
-		EntryID:     rootID,
-		PublicID:    rootPublicID,
-		EntryType:   "FOLDER",
-		Size:        384,
-		CreatedAt:   time.Now().UTC(),
+	event := events.S3CleanupEvent{
+		EventID:   uuid.NewString(),
+		EventType: events.EventS3Cleanup,
+		UserID:    userID,
+		Objects: []events.S3CleanupObject{
+			{BucketName: testBucket, S3Key: files[0].key},
+			{BucketName: testBucket, S3Key: files[1].key},
+			{BucketName: testBucket, S3Key: files[2].key},
+		},
+		CreatedAt: time.Now().UTC(),
 	}
 
 	payload, err := json.Marshal(event)
 	if err != nil {
 		stopConsumer()
-		t.Fatalf("failed to marshal folder event: %v", err)
+		t.Fatalf("failed to marshal S3 cleanup event: %v", err)
 	}
 
 	writer := &kafka.Writer{
@@ -647,7 +647,7 @@ func TestS3CleanupConsumer_FolderDeleted_Integration(t *testing.T) {
 
 	publishCtx, publishCancel := context.WithTimeout(ctx, 10*time.Second)
 	err = writer.WriteMessages(publishCtx, kafka.Message{
-		Key:   []byte(fmt.Sprintf("%d", userID)),
+		Key:   fmt.Appendf(nil, "%d", userID),
 		Value: payload,
 		Headers: []kafka.Header{
 			{Key: "event_id", Value: []byte(event.EventID)},
@@ -658,7 +658,7 @@ func TestS3CleanupConsumer_FolderDeleted_Integration(t *testing.T) {
 
 	if err != nil {
 		stopConsumer()
-		t.Fatalf("failed to publish folder deletion event: %v", err)
+		t.Fatalf("failed to publish S3 cleanup event: %v", err)
 	}
 
 	// All three objects must be deleted, including nested descendants.
@@ -678,5 +678,5 @@ func TestS3CleanupConsumer_FolderDeleted_Integration(t *testing.T) {
 		t.Error("consumer did not stop within 15 seconds")
 	}
 
-	t.Log("SUCCESS: FOLDER_DELETED cleaned up all descendant S3 objects")
+	t.Log("SUCCESS: S3_CLEANUP deleted all objects, including nested descendants")
 }

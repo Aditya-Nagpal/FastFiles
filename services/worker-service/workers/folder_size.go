@@ -2,7 +2,6 @@ package workers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/Aditya-Nagpal/Cloud-File-Storage-System/services/shared/events"
@@ -10,18 +9,26 @@ import (
 )
 
 func HandleFolderSizeEvent(ctx context.Context, message []byte) error {
-	var event events.EntryEvent
-
-	if err := json.Unmarshal(message, &event); err != nil {
+	decoded, err := events.DecodeEvent(message)
+	if err != nil {
 		return &PermanentError{
-			Err: fmt.Errorf("invalid entry event JSON: %w", err),
+			Err: fmt.Errorf("invalid folder-size event: %w", err),
+		}
+	}
+
+	event, ok := decoded.(events.EntryEvent)
+	if !ok {
+		return &PermanentError{
+			Err: fmt.Errorf("unexpected event schema for folder-size worker"),
 		}
 	}
 
 	switch event.EventType {
 	case events.EventFileCreated,
 		events.EventFileTrashed,
-		events.EventFolderTrashed:
+		events.EventFolderTrashed,
+		events.EventFileRestored,
+		events.EventFolderRestored:
 		// These events can change ancestor folder sizes.
 	default:
 		return nil

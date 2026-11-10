@@ -46,15 +46,28 @@ func RunFolderSizeConsumer(
 			continue
 		}
 
-		var event events.EntryEvent
-
-		// Malformed JSON cannot succeed on retry.
-		if err := json.Unmarshal(message.Value, &event); err != nil {
-			permanentErr := fmt.Errorf("invalid entry event JSON: %w", err)
+		// Decode event using the shared event schema registry.
+		decoded, err := events.DecodeEvent(message.Value)
+		if err != nil {
+			permanentErr := fmt.Errorf("invalid event payload: %w", err)
 
 			if err := publishAndCommitFolderSizeDLQ(
 				ctx, brokers, reader, message, "unknown", permanentErr,
 			); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Folder-size consumer only processes EntryEvent.
+		event, ok := decoded.(events.EntryEvent)
+		if !ok {
+			log.Printf(
+				"Skipping unsupported event schema for folder-size consumer; offset=%d",
+				message.Offset,
+			)
+
+			if err := commitWithRetry(ctx, reader, message); err != nil {
 				return err
 			}
 			continue
@@ -68,8 +81,7 @@ func RunFolderSizeConsumer(
 				break
 			}
 
-			var permanentErr *workers.PermanentError
-			if errors.As(err, &permanentErr) {
+			if _, ok := errors.AsType[*workers.PermanentError](err); ok {
 				log.Printf(
 					"Folder-size permanent failure at offset=%d: %v",
 					message.Offset,
