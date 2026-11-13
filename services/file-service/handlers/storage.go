@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"math"
 	"net/http"
 
@@ -18,11 +19,12 @@ func GetStorageQuota() gin.HandlerFunc {
 
 		quota, err := db.GetStorageQuota(c.Request.Context(), userID)
 		if quota == nil && err == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Storage record not found"})
+			c.JSON(http.StatusNotFound, gin.H{"message": "Storage record not found"})
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch storage quota", "error": err.Error()})
+			log.Printf("Failed to fetch storage quota: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Failed to fetch storage quota"})
 			return
 		}
 
@@ -39,6 +41,8 @@ func GetStorageQuota() gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{
 			"quotaBytes":      quota.QuotaBytes,
 			"usedBytes":       quota.UsedBytes,
+			"activeBytes":     quota.ActiveBytes,
+			"trashBytes":      quota.TrashBytes,
 			"reservedBytes":   quota.ReservedBytes,
 			"availableBytes":  availableBytes,
 			"usagePercentage": usagePercentage,

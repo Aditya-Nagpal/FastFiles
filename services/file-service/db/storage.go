@@ -521,10 +521,25 @@ func ReleaseQuota(tx pgx.Tx, ctx context.Context, userID int64, sizeBytes int64)
 
 func GetStorageQuota(ctx context.Context, userID int64) (*models.StorageQuota, error) {
 	query := `
-        SELECT quota_bytes, used_bytes, reserved_bytes
-        FROM user_storage
-        WHERE user_id = $1
-    `
+		SELECT
+			us.quota_bytes,
+			us.used_bytes,
+			us.reserved_bytes,
+			COALESCE(e.active_bytes, 0) AS active_bytes,
+			COALESCE(e.trash_bytes, 0) AS trash_bytes
+		FROM user_storage us
+		LEFT JOIN (
+			SELECT
+				user_id,
+				SUM(size) FILTER (WHERE deleted_at IS NULL) AS active_bytes,
+				SUM(size) FILTER (WHERE deleted_at IS NOT NULL) AS trash_bytes
+			FROM entries
+			WHERE user_id = $1
+			  AND type = 'FILE'
+			GROUP BY user_id
+		) e ON e.user_id = us.user_id
+		WHERE us.user_id = $1
+	`
 
 	var quota models.StorageQuota
 
@@ -532,6 +547,8 @@ func GetStorageQuota(ctx context.Context, userID int64) (*models.StorageQuota, e
 		&quota.QuotaBytes,
 		&quota.UsedBytes,
 		&quota.ReservedBytes,
+		&quota.ActiveBytes,
+		&quota.TrashBytes,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
