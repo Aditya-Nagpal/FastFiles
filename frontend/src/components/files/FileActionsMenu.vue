@@ -8,11 +8,13 @@ const props = withDefaults(
     downloading?: boolean;
     variant?: 'files' | 'trash';
     restoring?: boolean;
+    permanentlyDeleting?: boolean;
   }>(),
   {
     downloading: false,
     variant: 'files',
     restoring: false,
+    permanentlyDeleting: false,
   },
 );
 
@@ -21,6 +23,7 @@ const emit = defineEmits<{
   (event: 'download', item: FileItem): void;
   (event: 'move-to-trash', item: FileItem): void;
   (event: 'restore', item: FileItem): void;
+  (event: 'permanent-delete', item: FileItem): void;
   (event: 'info', item: FileItem): void;
 }>();
 
@@ -57,10 +60,17 @@ function moveToTrash() {
 }
 
 function restoreItem() {
-  if (props.restoring) return;
+  if (props.restoring || props.permanentlyDeleting) return;
 
   closeMenu();
   emit('restore', props.item);
+}
+
+function permanentlyDeleteItem() {
+  if (props.restoring || props.permanentlyDeleting) return;
+
+  closeMenu();
+  emit('permanent-delete', props.item);
 }
 
 function showInfo() {
@@ -85,11 +95,22 @@ onBeforeUnmount(() => {
 
     <div class="file-actions-menu">
       <template v-if="props.variant === 'trash'">
-        <button type="button" :disabled="props.restoring" @click="restoreItem">
+        <button type="button" :disabled="props.restoring || props.permanentlyDeleting" @click="restoreItem">
           <span>{{ props.restoring ? 'Restoring…' : 'Restore' }}</span>
           <svg class="file-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M4 10a8 8 0 1 1 2.3 5.7" />
             <path d="M4 4v6h6" />
+          </svg>
+        </button>
+
+        <button class="danger-menu-item" type="button" :disabled="props.restoring || props.permanentlyDeleting"
+          @click="permanentlyDeleteItem">
+          <span>{{ props.permanentlyDeleting ? 'Deleting…' : 'Permanently delete' }}</span>
+          <svg class="file-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 7h16" />
+            <path d="M9 7V4h6v3" />
+            <path d="m6 7 1 13h10l1-13" />
+            <path d="M10 11v5M14 11v5" />
           </svg>
         </button>
       </template>

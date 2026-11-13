@@ -103,5 +103,23 @@ export const useTrashStore = defineStore('trash', {
                 this.total = Math.max(0, this.total - 1);
             }
         },
+
+        async permanentlyDeleteItem(publicId: string) {
+            await apiClient.delete(
+                `${apiRoutes.files}/trash/${encodeURIComponent(publicId)}/permanent`,
+            );
+
+            const wasInCurrentList = this.items.some(
+                (item) => item.public_id === publicId,
+            );
+
+            this.items = this.items.filter(
+                (item) => item.public_id !== publicId,
+            );
+
+            if (wasInCurrentList) {
+                this.total = Math.max(0, this.total - 1);
+            }
+        },
     },
 });

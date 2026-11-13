@@ -17,6 +17,7 @@ const props = withDefaults(
     emptyDescription?: string;
     variant?: 'files' | 'trash';
     restoringPublicIds?: string[];
+    permanentlyDeletingPublicIds?: string[];
   }>(),
   {
     emptyTitle: 'This folder is empty',
@@ -34,6 +35,7 @@ const emit = defineEmits<{
   (event: 'info', item: FileItem): void;
   (event: 'star', item: FileItem, isStarred: boolean): void;
   (event: 'restore', item: FileItem): void;
+  (event: 'permanent-delete', item: FileItem): void;
 }>();
 
 function handleStarToggle(item: FileItem, isStarred: boolean) {
@@ -91,8 +93,9 @@ function handleStarToggle(item: FileItem, isStarred: boolean) {
 
           <template v-if="props.variant === 'trash'">
             <FileActionsMenu :item="item" variant="trash"
-              :restoring="props.restoringPublicIds?.includes(item.public_id) ?? false"
-              @restore="emit('restore', $event)" @info="emit('info', $event)" />
+              :restoring="props.restoringPublicIds?.includes(item.public_id) ?? false" :permanently-deleting="props.permanentlyDeletingPublicIds?.includes(item.public_id) ?? false
+                " @restore="emit('restore', $event)" @permanent-delete="emit('permanent-delete', $event)"
+              @info="emit('info', $event)" />
           </template>
 
           <template v-else>

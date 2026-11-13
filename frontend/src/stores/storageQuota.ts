@@ -3,9 +3,11 @@ import { apiClient } from '../api/http';
 import { apiRoutes } from '../api/routes';
 
 export interface StorageQuota {
+    activeBytes: number;
     availableBytes: number;
     quotaBytes: number;
     reservedBytes: number;
+    trashBytes: number;
     usagePercentage: number;
     usedBytes: number;
 }
